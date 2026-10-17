@@ -30,7 +30,6 @@
 
 	<ItemGroup>
 		<EmbeddedResource Include="Resources\*.png" />
-		<EmbeddedResource Include="Resources\Logo.jpg" />
 		<EmbeddedResource Include="Resources\Locales\*.xml" />
 	</ItemGroup>
 

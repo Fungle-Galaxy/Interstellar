@@ -13,35 +13,24 @@ using Interstellar.Voice;
 
 namespace Interstellar.Network.P2P;
 
-/// <summary>
-/// Pure-C# P2P media transport.
-///
-/// Design (no relay of any kind, by request):
-///   • one UDP socket per voice session — all peers share it, so a single NAT
-///     mapping carries every media flow;
-///   • candidates = local unicast addresses + server-reflexive addresses learned
-///     from a configurable pile of STUN servers (whichever answers wins);
-///   • peer candidates + an ephemeral ECDH public key arrive over the voice
-///     server's existing "signal" event (server only ever relays public keys);
-///   • connectivity checks are plain STUN binding requests fired simultaneously
-///     at every candidate from both sides — classic simultaneous-open hole
-///     punching. The path is validated when a binding response comes back;
-///   • every media frame is sealed with AES-256-GCM;
-///   • if no path opens, this class sends nothing for that peer — routing is
-///     the ServerConnection's job: Auto mode falls back to the server's
-///     "signal" relay for peers without a validated path, P2P mode stays
-///     silent, Relay mode never asks us to send media at all (it is only kept
-///     alive so a strict-P2P peer can still reach us).
-///
-/// The receive loop is a dedicated long-running thread; all session state is
-/// guarded by a single lock; callbacks (<see cref="_onAudio"/>) fire outside it.
-/// </summary>
+// P2P media transport, direct first / relay on failure.
+//
+// One UDP socket per voice session, shared by every peer. Candidates are
+// local unicast addresses plus srflx addresses learned from STUN. Peer
+// candidates and an ephemeral ECDH key arrive over the voice server's signal
+// channel. Connectivity checks are simultaneous STUN bindings; a path is
+// validated by the first binding response. If punching burns its window (or
+// NAT fix is on from the start), a single TURN allocation is selected and
+// announced on the same signal channel; the relayed path then races the
+// direct one per peer. Media is sealed with AES-256-GCM either way.
+//
+// The receive loop is a dedicated long-running thread; all session state is
+// guarded by _lock; callbacks fire outside it.
 internal sealed class P2pTransport : IDisposable
 {
     public delegate void AudioHandler(int clientId, byte[] opus, uint counter);
     public delegate void SignalHandler(string sid, string json);
 
-    // ── timing ──────────────────────────────────────────────────────────────
     private const int TickIntervalMs = 100;
     private const int ProbeIntervalMs = 100;
     private const int PunchWindowMs = 7000;
@@ -63,7 +52,25 @@ internal sealed class P2pTransport : IDisposable
 
     private readonly AudioHandler _onAudio;
     private readonly SignalHandler _signal;
-    private readonly string[] _stunServers;
+
+    // STUN servers for srflx discovery. The server's clientPeerConfig list
+    // wins when present; the config-file list is the no-secret fallback.
+    private volatile string[] _stunServers;
+
+    // TURN fallback: punch first, relay when the punch fails; under NAT fix,
+    // relay from the first packet. One allocation is shared by every peer
+    // (permissions are per peer), selected by measured latency or region.
+    private readonly object _turnLock = new();
+    private Turn.TurnClient? _turn;
+    private bool _turnBusy;
+    private volatile bool _turnWanted;
+    private long _turnRetryAt;
+    private const int TurnSelectTimeoutMs = 4000;
+    private const int TurnRetryCooldownMs = 15000;
+
+    // NAT fix: never punch, relay every peer from the start. The server's
+    // forceRelayOnly pins this on and cannot be overridden locally.
+    private static bool NatFixOn => VoiceConfig.NatFix || IceConfig.ForceRelayOnly;
 
     private readonly object _lock = new();
 
@@ -107,15 +114,282 @@ internal sealed class P2pTransport : IDisposable
         public string? k { get; set; }
         public string[]? c { get; set; }
         public int g { get; set; }
+        // Relay address for t="turn"; never present on t="hi".
+        public string? r { get; set; }
     }
+
+    // Live transport of the current room (at most one; VoiceRoom is a singleton).
+    public static P2pTransport? Active { get; private set; }
 
     public P2pTransport(AudioHandler onAudio, SignalHandler signal)
     {
         _onAudio = onAudio;
         _signal = signal;
         _stunServers = LoadStunServers();
+        Active = this;
     }
-    
+
+    // STUN list from the server's clientPeerConfig. The config-file list is
+    // only used until this arrives. STUN has no credentials.
+    public void SetStunServers()
+    {
+        var fromServer = IceConfig.StunServers;
+        if (fromServer.Count == 0) return;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var list = new List<string>();
+        foreach (var s in fromServer)
+            if (!string.IsNullOrWhiteSpace(s) && seen.Add(s.Trim())) list.Add(s.Trim());
+        if (list.Count == 0) return;
+        _stunServers = list.ToArray();
+        Logger("[P2P] STUN servers from server config: " + _stunServers.Length);
+    }
+
+    // Ensure a TURN allocation exists. Coalesces concurrent calls and backs
+    // off after failures instead of spinning.
+    private void EnsureTurn(string reason)
+    {
+        if (_disposed) return;
+        _turnWanted = true;
+        lock (_turnLock)
+        {
+            if (_turnBusy || (_turn != null && _turn.Ready)) return;
+            if (Environment.TickCount64 < _turnRetryAt) return;
+            _turnBusy = true;
+        }
+        _ = Task.Run(() => SelectTurnAsync(reason));
+    }
+
+    private async Task SelectTurnAsync(string reason)
+    {
+        var candidates = BuildTurnCandidates(out bool pinned);
+        if (candidates.Count == 0)
+        {
+            Logger("[P2P] TURN needed (" + reason + ") but no candidates — the server " +
+                   "sent none in clientPeerConfig and no local override is set");
+            lock (_turnLock)
+            {
+                _turnBusy = false;
+                _turnRetryAt = Environment.TickCount64 + TurnRetryCooldownMs;
+            }
+            return;
+        }
+
+        // Race every candidate on its own socket. Allocation time is the
+        // latency measure; the fastest wins, the rest are released.
+        var tasks = new Task<Turn.TurnClient?>[candidates.Count];
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            var c = candidates[i];
+            tasks[i] = Turn.TurnClient.AllocateAsync(c.Url, c.User, c.Pass, TurnSelectTimeoutMs);
+        }
+        Turn.TurnClient?[] results;
+        try { results = await Task.WhenAll(tasks); }
+        catch { results = Array.Empty<Turn.TurnClient?>(); }
+
+        Turn.TurnClient? best = null;
+        long bestRtt = long.MaxValue;
+        foreach (var c in results)
+        {
+            if (c == null || !c.Ready) continue;
+            if (c.RttMs < bestRtt)
+            {
+                var old = best;
+                best = c;
+                bestRtt = c.RttMs;
+                try { old?.Dispose(); } catch { }
+            }
+            else { try { c.Dispose(); } catch { } }
+        }
+
+        if (best == null)
+        {
+            Logger("[P2P] TURN: all " + candidates.Count + " candidate(s) failed (" +
+                   reason + ") — retrying after cooldown");
+            lock (_turnLock)
+            {
+                _turnBusy = false;
+                _turnRetryAt = Environment.TickCount64 + TurnRetryCooldownMs;
+            }
+            return;
+        }
+
+        Turn.TurnClient? prev;
+        lock (_turnLock)
+        {
+            prev = _turn;
+            _turn = best;
+            _turnBusy = false;
+            _turnRetryAt = 0;
+        }
+        best.OnPayload = OnTurnPayload;
+        best.OnDead = OnTurnDead;
+        try { prev?.Dispose(); } catch { }
+        Logger("[P2P] TURN selected " + best.Spec + " rtt=" + best.RttMs + "ms" +
+               (pinned ? " (pinned)" : "") + " (" + reason + ")");
+
+        AnnounceAndWire();
+    }
+
+    // A pinned local override wins outright (no latency race). Otherwise the
+    // server's list, region-filtered when the player pinned a region and
+    // auto-pick is off; falls back to the whole list when the region has no
+    // entries rather than going silent.
+    private static List<(string Url, string User, string Pass)> BuildTurnCandidates(out bool pinned)
+    {
+        pinned = false;
+        var all = new List<(string, string, string)>();
+        string local = VoiceConfig.TurnOverrideUrl;
+        if (!string.IsNullOrWhiteSpace(local))
+        {
+            pinned = true;
+            all.Add((local.Trim(), VoiceConfig.TurnOverrideUsername, VoiceConfig.TurnOverrideCredential));
+            return all;
+        }
+
+        var turns = IceConfig.Turns;
+        string region = (VoiceConfig.TurnRegion ?? "").Trim();
+        // Empty region = auto: race everything. Concrete tag = pin that region.
+        bool auto = region.Length == 0;
+        if (!auto && turns.Count > 0)
+        {
+            var regional = new List<(string, string, string)>();
+            foreach (var t in turns)
+                if (string.Equals((t.Region ?? "").Trim(), region, StringComparison.OrdinalIgnoreCase))
+                    regional.Add((t.Url, t.Username, t.Credential));
+            if (regional.Count > 0) { pinned = true; return regional; }
+        }
+        foreach (var t in turns) all.Add((t.Url, t.Username, t.Credential));
+        return all;
+    }
+
+    // Announce our relayed address to every peer and wire each session.
+    private void AnnounceAndWire()
+    {
+        P2pSession[] snapshot;
+        lock (_lock)
+        {
+            if (_disposed) return;
+            snapshot = _sessions.Values.ToArray();
+        }
+        foreach (var s in snapshot)
+        {
+            if (s.Disposed) continue;
+            SendTurnAnnounce(s);
+            WireRelayFor(s);
+        }
+        FlushSignals();
+    }
+
+    private void SendTurnAnnounce(P2pSession s)
+    {
+        var turn = _turn;
+        if (turn == null || !turn.Ready || turn.Relayed == null) return;
+        s.TurnAnnounced = true;
+        string json;
+        try { json = JsonSerializer.Serialize(new HelloMsg { t = "turn", r = turn.Relayed.ToString() }); }
+        catch { return; }
+        _outSignals.Enqueue((s.Sid, json));
+    }
+
+    // Relay wiring for one session. Permissions are needed for the peer's
+    // relayed address AND their public candidates (a peer without TURN of
+    // their own sends straight at our relayed port). The relayed address also
+    // becomes a probe target. Idempotent.
+    private void WireRelayFor(P2pSession s)
+    {
+        var turn = _turn;
+        if (turn == null || !turn.Ready || turn.Relayed == null) return;
+
+        IPEndPoint? peerRelayed;
+        IPEndPoint[] direct;
+        lock (_lock)
+        {
+            if (s.Disposed || _disposed) return;
+            peerRelayed = s.PeerRelayed;
+            direct = s.Targets.ToArray();
+        }
+
+        if (peerRelayed != null) turn.PreparePeer(peerRelayed);
+        foreach (var ep in direct)
+            if (!IsPrivateAddress(ep)) turn.PreparePeer(ep);
+
+        if (peerRelayed == null) return;
+        lock (_lock)
+        {
+            if (s.Disposed || _disposed) return;
+            s.PeerRelayed = peerRelayed;
+            s.AddTarget(peerRelayed);
+            if (!s.Connected && s.PunchRoundEndsAt == 0 && s.HasPeerHello)
+                StartPunchLocked(s, reason: "relay target");
+        }
+    }
+
+    // Packet from the TURN relay: same shapes as the plain socket, flagged so
+    // replies ride the relay back.
+    private void OnTurnPayload(byte[] data, IPEndPoint from)
+    {
+        try { HandleDatagram(data, from, viaTurn: true); }
+        catch (Exception ex)
+        {
+            if (++_errors <= 5) Logger("[P2P] turn rx error: " + ex.Message);
+        }
+    }
+
+    private void OnTurnDead()
+    {
+        Logger("[P2P] TURN allocation died — releasing, reselecting");
+        Turn.TurnClient? dead;
+        lock (_turnLock)
+        {
+            dead = _turn;
+            _turn = null;
+            _turnBusy = false;
+            _turnRetryAt = 0;
+        }
+        try { dead?.Dispose(); } catch { }
+        // Sessions keep PeerRelayed; the quiet-window path switch (or DeadMs
+        // re-punch) will move them onto the fresh allocation once announced.
+        EnsureTurn("allocation died");
+    }
+
+    // Route one raw packet. NAT fix pins everything to the relay; a session
+    // on a relay path (or a destination that is a relayed address) rides our
+    // TURN allocation; everything else stays on the direct socket. Falls
+    // through to UDP only when the relay has no channel yet — under NAT fix
+    // that drops instead, since leaking to the direct socket must never happen.
+    private bool SendPathLocked(P2pSession? s, byte[] data, IPEndPoint dest, bool viaTurnHint = false)
+    {
+        if (data == null || data.Length == 0 || dest == null) return false;
+        var turn = _turn;
+        bool relay = viaTurnHint || NatFixOn || (s?.ViaRelay == true)
+                     || (s != null && s.PeerRelayed != null && EqualsAddress(dest, s.PeerRelayed))
+                     || IsRelayedAddr(dest);
+        if (relay)
+        {
+            if (turn != null && turn.Ready && turn.Send(data, dest)) return true;
+            if (NatFixOn) return false;
+        }
+        var udp = _udp;
+        if (udp == null) return false;
+        try { udp.Send(data, data.Length, dest); return true; }
+        catch { return false; }
+    }
+
+    // True when ep is a TURN relayed address — ours or one a peer announced.
+    // Locks internally (re-entrant), so callable under _lock.
+    private bool IsRelayedAddr(IPEndPoint? ep)
+    {
+        if (ep == null) return false;
+        var ours = _turn?.Relayed;
+        if (ours != null && EqualsAddress(ours, ep)) return true;
+        lock (_lock)
+        {
+            foreach (var s in _sessions.Values)
+                if (s.PeerRelayed != null && EqualsAddress(s.PeerRelayed, ep)) return true;
+        }
+        return false;
+    }
+
     public void Start()
     {
         lock (_lock)
@@ -132,7 +406,7 @@ internal sealed class P2pTransport : IDisposable
                     const int SioUdpConnreset = -1744830452;
                     _udp.Client.IOControl(SioUdpConnreset, new byte[] { 0 }, null!);
                 }
-                catch { /* non-Windows / restricted socket — harmless */ }
+                catch { /* non-Windows */ }
                 _port = ((IPEndPoint)_udp.Client.LocalEndPoint!).Port;
             }
             catch (Exception ex)
@@ -173,6 +447,11 @@ internal sealed class P2pTransport : IDisposable
         try { udp?.Close(); } catch { }
         try { udp?.Dispose(); } catch { }
 
+        if (Active == this) Active = null;
+        Turn.TurnClient? turn;
+        lock (_turnLock) { turn = _turn; _turn = null; _turnBusy = false; }
+        try { turn?.Dispose(); } catch { }
+
         P2pSession[] sessions;
         lock (_lock)
         {
@@ -185,7 +464,7 @@ internal sealed class P2pTransport : IDisposable
         }
         foreach (var s in sessions) { try { s.Dispose(); } catch { } }
     }
-    
+
     public void AddPeer(string sid, int clientId)
     {
         if (_disposed || string.IsNullOrEmpty(sid)) return;
@@ -202,6 +481,11 @@ internal sealed class P2pTransport : IDisposable
                 var s = new P2pSession(sid, clientId);
                 _sessions[sid] = s;
                 SendHelloLocked(s);
+                if (NatFixOn) EnsureTurn("natfix");
+                // Announce when the allocation already exists: a peer that
+                // joins after selection would otherwise never learn our
+                // relayed address.
+                if (_turn != null && _turn.Ready) SendTurnAnnounce(s);
             }
         }
         finally { FlushSignals(); }
@@ -258,7 +542,36 @@ internal sealed class P2pTransport : IDisposable
         HelloMsg? msg;
         try { msg = JsonSerializer.Deserialize<HelloMsg>(json); }
         catch { return; }
-        if (msg == null || !string.Equals(msg.t, "hi", StringComparison.Ordinal)) return;
+        if (msg == null) return;
+
+        // Peer's relayed address — same channel as HELLO, no key material, so
+        // the server's "from" alone attributes it.
+        if (string.Equals(msg.t, "turn", StringComparison.Ordinal))
+        {
+            if (string.IsNullOrEmpty(msg.r)) return;
+            if (!IPEndPoint.TryParse(msg.r!.Trim(), out var relayed) || relayed == null) return;
+            P2pSession ts;
+            bool wireOurs;
+            lock (_lock)
+            {
+                if (_disposed || !_sessions.TryGetValue(fromSid, out var found) || found.Disposed) return;
+                ts = found;
+                ts.PeerRelayed = relayed;
+                ts.AddTarget(relayed);
+                Logger("[P2P] cid=" + ts.ClientId + " peer relayed=" + relayed);
+                if (!ts.Connected && ts.PunchRoundEndsAt == 0 && ts.HasPeerHello)
+                    StartPunchLocked(ts, reason: "relay target");
+                wireOurs = _turn != null && _turn.Ready;
+            }
+            // Their packets can only reach us through our relay.
+            EnsureTurn("peer announced relay");
+            // Answer once per peer; re-answering every announce would ping-pong.
+            if (wireOurs && !ts.TurnAnnounced) SendTurnAnnounce(ts);
+            WireRelayFor(ts);
+            FlushSignals();
+            return;
+        }
+        if (!string.Equals(msg.t, "hi", StringComparison.Ordinal)) return;
 
         var dirHex = msg.d;
         if (string.IsNullOrEmpty(dirHex) || string.IsNullOrEmpty(msg.k)) return;
@@ -286,7 +599,7 @@ internal sealed class P2pTransport : IDisposable
 
             if (s.HasPeerHello)
             {
-                // Peer restarted with new key material — drop the old identity.
+                // Peer restarted with new key material.
                 UnregisterPeerLocked(s, s.PeerDirHex);
                 s.ResetPeerIdentity();
             }
@@ -306,11 +619,58 @@ internal sealed class P2pTransport : IDisposable
             FlushOrphansLocked(s);
 
             SendHelloLocked(s);
+            // Re-announce under the new identity: their old session is gone.
+            SendTurnAnnounce(s);
 
             if (!s.Connected && s.PunchRoundEndsAt == 0) StartPunchLocked(s, reason: "hello");
             }
         }
         finally { FlushSignals(); }
+    }
+
+    // The connect flow as one HUD line: TURN phase first (it blocks everything
+    // under NAT fix), then the first pending peer's step. Once every peer is
+    // up it becomes a summary of the real paths. Null when nothing to narrate.
+    public string? DescribeProgress()
+    {
+        lock (_lock)
+        {
+            if (_disposed || _sessions.Count == 0) return null;
+
+            int total = 0, relayed = 0, pending = 0;
+            string? step = null;
+            foreach (var s in _sessions.Values)
+            {
+                total++;
+                if (!s.Connected) { pending++; if (step == null) step = PeerStep(s); }
+                else if (s.ViaRelay) relayed++;
+            }
+
+            if (pending == 0)
+            {
+                string up = (total - pending) + "/" + total;
+                if (relayed == total)
+                    return TranslationHelper.Get("vc.hud.p2p.allrelay", "P2P · TURN relay ") + up;
+                if (relayed == 0)
+                    return TranslationHelper.Get("vc.hud.p2p.alldirect", "P2P · direct ") + up;
+                return TranslationHelper.Get("vc.hud.p2p.mixed", "P2P · relay/direct ")
+                       + relayed + "+" + (total - relayed) + " " + up;
+            }
+
+            var turn = _turn;
+            if (turn == null && _turnWanted)
+                return TranslationHelper.Get("vc.hud.p2p.turnwait", "TURN: waiting for server config…");
+            if ((turn != null && !turn.Ready) || _turnBusy)
+                return TranslationHelper.Get("vc.hud.p2p.turnalloc", "TURN: allocating…");
+            return step ?? TranslationHelper.Get("vc.hud.p2p.waitpeer", "waiting for peer…");
+        }
+    }
+
+    private static string PeerStep(P2pSession s)
+    {
+        if (!s.HasPeerHello) return TranslationHelper.Get("vc.hud.p2p.waitpeer", "waiting for peer…");
+        if (s.PeerRelayed == null) return TranslationHelper.Get("vc.hud.p2p.announce", "exchanging relay announce…");
+        return TranslationHelper.Get("vc.hud.p2p.wiring", "binding / probing…");
     }
 
     public void SendAll(byte[] opus)
@@ -319,8 +679,7 @@ internal sealed class P2pTransport : IDisposable
         lock (_lock)
         {
             if (_disposed) return;
-            var udp = _udp;
-            if (udp == null || _sessions.Count == 0) return;
+            if (_sessions.Count == 0) return;
 
             foreach (var s in _sessions.Values)
             {
@@ -329,7 +688,7 @@ internal sealed class P2pTransport : IDisposable
                 if (pkt == null) continue;
                 try
                 {
-                    udp.Send(pkt, pkt.Length, s.Remote);
+                    if (!SendPathLocked(s, pkt, s.Remote)) continue;
                     if (s.MediaTx++ == 0)
                         Logger("[P2P] media tx cid=" + s.ClientId + " sid=" + s.Sid + " (first frame)");
                 }
@@ -351,14 +710,12 @@ internal sealed class P2pTransport : IDisposable
         lock (_lock)
         {
             if (_disposed) return false;
-            var udp = _udp;
-            if (udp == null) return false;
             if (!_sessions.TryGetValue(sid, out var s) || s == null || s.Disposed
                 || !s.Connected || s.Remote == null) return false;
             var pkt = s.Crypto.Seal(opus);
             if (pkt == null) return false;
-            try { udp.Send(pkt, pkt.Length, s.Remote); return true; }
-            catch { return false; } // transient: caller relays this frame instead
+            try { return SendPathLocked(s, pkt, s.Remote); }
+            catch { return false; } // frame is lost, never doubled
         }
     }
 
@@ -401,14 +758,14 @@ internal sealed class P2pTransport : IDisposable
         }
     }
 
-    private void HandleDatagram(byte[] data, IPEndPoint from)
+    private void HandleDatagram(byte[] data, IPEndPoint from, bool viaTurn = false)
     {
-        if (StunMessage.IsStun(data)) { HandleStun(data, from); return; }
+        if (StunMessage.IsStun(data)) { HandleStun(data, from, viaTurn); return; }
         if (data.Length >= P2pCrypto.HeaderLen + P2pCrypto.TagLen && data[0] == P2pCrypto.MediaMagic)
-            HandleMedia(data, from);
+            HandleMedia(data, from, viaTurn);
     }
 
-    private void HandleStun(byte[] data, IPEndPoint from)
+    private void HandleStun(byte[] data, IPEndPoint from, bool viaTurn = false)
     {
         ushort type = StunMessage.MessageType(data);
 
@@ -426,8 +783,8 @@ internal sealed class P2pTransport : IDisposable
 
             if (p.Tcs != null)
             {
-                // STUN server query: XOR-MAPPED-ADDRESS is *our* address — this is
-                // where the server-reflexive candidate comes from.
+                // STUN server query: XOR-MAPPED-ADDRESS is our own address —
+                // this is where the srflx candidate comes from.
                 if (type == StunMessage.BindingSuccess &&
                     StunMessage.TryParseBindingResponse(data, txId, out var mapped))
                     p.Tcs.TrySetResult(mapped);
@@ -437,20 +794,22 @@ internal sealed class P2pTransport : IDisposable
             }
 
             if (p.Session == null || p.Session.Disposed) return;
-            // Punch response: the *source* of this packet is the peer's address
-            // (XOR-MAPPED here would be our own address, so we ignore it).
-            if (type == StunMessage.BindingSuccess) OnPathValidated(p.Session, from);
+            // NAT fix: only relayed answers count.
+            if (NatFixOn && !viaTurn) return;
+            // Punch response: the source of this packet is the peer's address.
+            if (type == StunMessage.BindingSuccess) OnPathValidated(p.Session, from, viaTurn);
             return;
         }
 
         if (type != StunMessage.BindingRequest) return;
+        if (NatFixOn && !viaTurn) return;
         _stunRxAny++;
 
         if (!StunMessage.TryGetTxId(data, out var reqTx)) return;
         if (!StunMessage.TryGetUsername(data, out var username)) return;
 
-        // USERNAME = <sender dirId hex>:<their view of us> — lets us attribute the
-        // probe to a session even though nothing has been validated yet.
+        // USERNAME = <sender dirId hex>:<their view of us> — attributes the
+        // probe to a session before any path is validated.
         var senderHex = username.Split(':')[0].ToLowerInvariant();
         byte[]? senderDir = FromHex(senderHex);
 
@@ -461,8 +820,8 @@ internal sealed class P2pTransport : IDisposable
             if (s.Disposed) return;
             s.LastInbound = Environment.TickCount64;
             if (s.StunRx++ == 0)
-                Logger("[P2P] rx probe cid=" + s.ClientId + " sid=" + s.Sid +
-                       " from=" + from + " (first)");
+                Dbg("[P2P] rx probe cid=" + s.ClientId + " sid=" + s.Sid +
+                    " from=" + from + " (first)");
             if (!s.Connected)
             {
                 if (!s.Learned.Contains(from)) s.Learned.Add(from);
@@ -470,17 +829,18 @@ internal sealed class P2pTransport : IDisposable
             }
         }
 
+        // Probe from an address we hold no permission for: open the relay
+        // path, or neither the answer nor anything after it can ride back.
+        if (viaTurn && !s.Connected) _turn?.PreparePeer(from);
+
         byte[] response;
         try { response = StunMessage.BuildBindingResponse(reqTx, from); }
         catch { return; }
 
-        UdpClient? udp;
-        lock (_lock) udp = _udp;
-        try { udp?.Send(response, response.Length, from); }
-        catch { /* path may not exist yet */ }
+        SendPathLocked(s, response, from, viaTurn);
     }
 
-    private void HandleMedia(byte[] data, IPEndPoint from)
+    private void HandleMedia(byte[] data, IPEndPoint from, bool viaTurn = false)
     {
         uint flow = (uint)((data[2] << 24) | (data[3] << 16) | (data[4] << 8) | data[5]);
         P2pSession? s;
@@ -489,10 +849,11 @@ internal sealed class P2pTransport : IDisposable
         lock (_lock)
         {
             if (_disposed) return;
+            // NAT fix: relay only.
+            if (NatFixOn && !viaTurn) return;
             if (!_byFlow.TryGetValue(flow, out s))
             {
-                // Their HELLO is still in flight over the websocket. Hold briefly
-                // and retry once it lands.
+                // Their HELLO is still in flight; hold briefly and retry.
                 if (_orphans.Count < MaxOrphans)
                     _orphans.Add((data, from, now));
                 return;
@@ -505,18 +866,23 @@ internal sealed class P2pTransport : IDisposable
         lock (_lock)
         {
             if (s.Disposed || _disposed) return;
+            if (NatFixOn && !viaTurn) return;
+            // On the relay when the packet came through our TURN allocation or
+            // its source is a relayed address — either way replies ride back.
+            bool relayPath = viaTurn || IsRelayedAddr(from);
             if (!s.Connected)
             {
-                AdoptPathLocked(s, from, reason: "authenticated frame");
+                AdoptPathLocked(s, from, reason: "authenticated frame", relayPath);
                 s.LastInbound = now;
             }
             else if (EqualsAddress(s.Remote, from))
             {
                 s.LastInbound = now;
+                s.ViaRelay = relayPath;
             }
             else if (IsPrivateUpgrade(s.Remote, from) || now - s.LastInbound > PathQuietMs)
             {
-                AdoptPathLocked(s, from, reason: "authenticated frame (path switch)");
+                AdoptPathLocked(s, from, reason: "authenticated frame (path switch)", relayPath);
                 s.LastInbound = now;
             }
             if (s.MediaFrames++ == 0)
@@ -527,21 +893,23 @@ internal sealed class P2pTransport : IDisposable
         catch { /* decoder must never take the receive loop down */ }
     }
 
-    private void OnPathValidated(P2pSession s, IPEndPoint from)
+    private void OnPathValidated(P2pSession s, IPEndPoint from, bool viaTurn = false)
     {
         lock (_lock)
         {
             if (s.Disposed || _disposed) return;
+            if (NatFixOn && !viaTurn) return;
             long now = Environment.TickCount64;
+            bool relayPath = viaTurn || IsRelayedAddr(from);
             if (s.Connected && !EqualsAddress(s.Remote, from))
             {
                 if (!IsPrivateUpgrade(s.Remote, from) && now - s.LastInbound <= PathQuietMs)
                     return;
-                AdoptPathLocked(s, from, reason: "binding response (path switch)");
+                AdoptPathLocked(s, from, reason: "binding response (path switch)", relayPath);
             }
             else
             {
-                AdoptPathLocked(s, from, reason: "binding response");
+                AdoptPathLocked(s, from, reason: "binding response", relayPath);
             }
             s.LastInbound = now;
         }
@@ -571,20 +939,22 @@ internal sealed class P2pTransport : IDisposable
         }
         catch
         {
-            return false; // unreadable → treat as public (conservative: quiet-window rule)
+            return false;
         }
     }
 
-    private void AdoptPathLocked(P2pSession s, IPEndPoint from, string reason)
+    private void AdoptPathLocked(P2pSession s, IPEndPoint from, string reason, bool relayPath = false)
     {
         bool changed = !s.Connected || !EqualsAddress(s.Remote, from);
         s.Connected = true;
         s.Remote = from;
+        s.ViaRelay = relayPath;
         s.LastOutbound = Environment.TickCount64;
         if (changed)
-            Logger("[P2P] connected cid=" + s.ClientId + " sid=" + s.Sid + " via " + from + " (" + reason + ")");
+            Logger("[P2P] connected cid=" + s.ClientId + " sid=" + s.Sid + " via " + from +
+                   (relayPath ? " [TURN]" : "") + " (" + reason + ")");
     }
-    
+
     private void StartPunchLocked(P2pSession s, string reason)
     {
         if (s.Targets.Count == 0) return;
@@ -594,9 +964,9 @@ internal sealed class P2pTransport : IDisposable
         s.PunchRoundEndsAt = now + PunchWindowMs;
         s.NextProbeAt = now;
         if (s.PunchRound == 0 || reason == "hello")
-            Logger("[P2P] punching cid=" + s.ClientId + " targets=" + s.Targets.Count +
-                   " (" + reason + ") " + string.Join(" ", s.Targets) +
-                   " | me=" + string.Join(" ", CollectCandidateStringsLocked()));
+            Dbg("[P2P] punching cid=" + s.ClientId + " targets=" + s.Targets.Count +
+                " (" + reason + ") " + string.Join(" ", s.Targets) +
+                " | me=" + string.Join(" ", CollectCandidateStringsLocked()));
     }
 
     private void SafeTick()
@@ -625,6 +995,11 @@ internal sealed class P2pTransport : IDisposable
             }
         }
 
+        // NAT fix can be flipped mid-session: start the relay the moment it is
+        // on, so a running room moves onto the relay within seconds instead of
+        // sitting silent until the 45s dead-path re-punch fires.
+        if (NatFixOn && (_turn == null || !_turn.Ready)) EnsureTurn("natfix");
+
         UdpClient? udp;
         try
         {
@@ -652,12 +1027,21 @@ internal sealed class P2pTransport : IDisposable
                     if (now - s.LastOutbound >= KeepAliveMs)
                     {
                         s.LastOutbound = now;
-                        if (s.Remote != null) ProbeLocked(s, s.Remote);
+                        if (s.Remote != null)
+                        {
+                            // Under NAT fix a session parked on its old direct
+                            // path is unreachable: aim the keepalive at their
+                            // relayed address instead, so the response validates
+                            // the relay path and the session adopts it.
+                            var dest = s.Remote;
+                            if (NatFixOn && !s.ViaRelay && s.PeerRelayed != null)
+                                dest = s.PeerRelayed;
+                            ProbeLocked(s, dest);
+                        }
                     }
                     continue;
                 }
 
-                // Not connected yet.
                 if (!s.HasPeerHello || s.Targets.Count == 0)
                 {
                     if (s.HelloCount < HelloMaxCount && now - s.LastHelloAt >= HelloResendMs)
@@ -674,9 +1058,23 @@ internal sealed class P2pTransport : IDisposable
                     int backoff = Math.Min(PunchRetryMaxBackoffMs,
                         PunchRetryMinBackoffMs + s.PunchRound * 2000);
                     s.PunchRoundEndsAt = now + PunchWindowMs + backoff;
-                    Logger("[P2P] punch attempt " + s.PunchRound + " cid=" + s.ClientId +
-                           " still trying (targets=" + s.Targets.Count +
-                           " tx=" + s.Probes + " rx=" + s.StunRx + " all=" + _stunRxAny + ")");
+                    Dbg("[P2P] punch attempt " + s.PunchRound + " cid=" + s.ClientId +
+                        " still trying (targets=" + s.Targets.Count +
+                        " tx=" + s.Probes + " rx=" + s.StunRx + " all=" + _stunRxAny + ")");
+                    // Direct punch had its window: bring the relay up now.
+                    if (s.PunchRound >= 1) EnsureTurn("punch failed");
+                }
+
+                if (NatFixOn)
+                {
+                    // NAT fix: never probe a direct address. Only the relayed
+                    // target, and only once our own allocation exists.
+                    EnsureTurn("natfix");
+                    if (_turn == null || !_turn.Ready) continue;
+                    if (now < s.NextProbeAt) continue;
+                    s.NextProbeAt = now + ProbeIntervalMs;
+                    if (s.PeerRelayed != null) ProbeLocked(s, s.PeerRelayed);
+                    continue;
                 }
 
                 if (now < s.NextProbeAt) continue;
@@ -692,8 +1090,6 @@ internal sealed class P2pTransport : IDisposable
     private void ProbeLocked(P2pSession s, IPEndPoint dest)
     {
         if (s.PeerDirHex == null) return;
-        var udp = _udp;
-        if (udp == null) return;
 
         var txId = StunMessage.NewTxId();
         var username = ToHex(s.Crypto.DirId) + ":" + s.PeerDirHex;
@@ -703,8 +1099,8 @@ internal sealed class P2pTransport : IDisposable
 
         s.Probes++;
         _pending[ToHex(txId)] = new Pending { Dest = dest, Session = s, SentAt = Environment.TickCount64 };
-        try { udp.Send(req, req.Length, dest); }
-        catch { _pending.Remove(ToHex(txId)); }
+        // Routed, not raw: relay-path destinations ride the TURN allocation.
+        if (!SendPathLocked(s, req, dest)) _pending.Remove(ToHex(txId));
     }
 
     private void PrunePendingLocked(long now)
@@ -719,7 +1115,6 @@ internal sealed class P2pTransport : IDisposable
         if (stale == null) return;
         foreach (var k in stale) _pending.Remove(k);
     }
-
 
     private void SendHelloLocked(P2pSession s)
     {
@@ -776,13 +1171,12 @@ internal sealed class P2pTransport : IDisposable
         long now = Environment.TickCount64;
         if (s.PunchRoundEndsAt == 0)
         {
-            // First list we have ever had — start punching.
             StartPunchLocked(s, reason: "candidates");
         }
         else
         {
-            // They moved: the round in progress was aimed at stale addresses, so
-            // give it a fresh window instead of letting it time out uselessly.
+            // They moved: give the in-progress round a fresh window rather
+            // than letting it time out on stale addresses.
             s.PunchRoundEndsAt = now + PunchWindowMs;
             s.NextProbeAt = now;
         }
@@ -795,7 +1189,7 @@ internal sealed class P2pTransport : IDisposable
         if (ep.Port <= 0 || ep.Address.Equals(IPAddress.Any) ||
             ep.Address.Equals(IPAddress.IPv6Any) || ep.Address.IsIPv6LinkLocal)
             return null;
-        if (ep.Address.GetAddressBytes()[0] == 0) return null; // 0/8, ::…, unspecified
+        if (ep.Address.GetAddressBytes()[0] == 0) return null; // 0/8, ::, unspecified
         return ep;
     }
 
@@ -884,7 +1278,7 @@ internal sealed class P2pTransport : IDisposable
                 }
             }
         }
-        catch { /* platform quirk — host candidates still include loopback */ }
+        catch { /* platform quirk */ }
 
         list.Add(new IPEndPoint(IPAddress.Loopback, _port));
 
@@ -931,9 +1325,9 @@ internal sealed class P2pTransport : IDisposable
                 _srflxAt = Environment.TickCount64;
                 if (found.Count > 0)
                 {
-                    // Replace, don't accumulate: on mobile the public mapping can
-                    // move mid-session, and a stale entry advertised ahead of the
-                    // fresh one crowds it out of the peer's MaxTargets budget.
+                    // Replace, don't accumulate: the public mapping can move
+                    // mid-session, and a stale entry crowds out the fresh one
+                    // from the peer's MaxTargets budget.
                     changed = _srflx.Count != found.Count;
                     if (!changed)
                         foreach (var ep in found)
@@ -1017,7 +1411,7 @@ internal sealed class P2pTransport : IDisposable
 
             if (mapped != null && IsUsefulSrflx(mapped))
             {
-                Logger("[P2P] STUN " + host + ":" + port + " → " + mapped);
+                Dbg("[P2P] STUN " + host + ":" + port + " → " + mapped);
                 PublishSrflx(mapped);
                 return mapped;
             }
@@ -1120,6 +1514,13 @@ internal sealed class P2pTransport : IDisposable
     private static void Logger(string msg)
     {
         try { InterstellarPlugin.Logger?.LogInfo(msg); }
-        catch { /* logger unavailable during teardown */ }
+        catch { /* teardown */ }
+    }
+
+    // Per-server / per-packet chatter; goes to BepInEx/LogOutput.log only.
+    private static void Dbg(string msg)
+    {
+        try { InterstellarPlugin.Logger?.LogDebug(msg); }
+        catch { /* teardown */ }
     }
 }

@@ -39,23 +39,12 @@ public static class VoiceConfig
     public static Action<VoiceRoomSettings>? OnSyncedSettingsChanged;
 
     // ── Server ────────────────────────────────────────────
-    public static int SelectedServerIndex
-    {
-        get => _serverIndex?.Value ?? 0;
-        set { if (_serverIndex != null) _serverIndex.Value = value; }
-    }
-    public static string CustomServerURL
-    {
-        get => _customUrl?.Value ?? "";
-        set { if (_customUrl != null) _customUrl.Value = value; }
-    }
-    public static string GetActiveServerURL()
-    {
-        var servers = ServerList.GetServers();
-        if (SelectedServerIndex >= 0 && SelectedServerIndex < servers.Count)
-            return servers[SelectedServerIndex].URL;
-        return CustomServerURL;
-    }
+    /// <summary>The one voice server — BCL mode: the client no longer offers a
+    /// server switch, so every dialer, publisher and HUD reads the same URL.</summary>
+    public const string ForcedServerUrl = "https://bcl.server.amongusclub.cn";
+
+    public static string GetActiveServerURL() => ForcedServerUrl;
+
     public static bool IsBeijingServer => GetActiveServerURL().Contains("bcl.server.amongusclub.cn");
 
     public static string GetServerLocationName(string? url)
@@ -80,22 +69,33 @@ public static class VoiceConfig
     /// </summary>
     public static string P2PStunServers => _p2pStun?.Value ?? DefaultStunServers;
 
-    /// <summary>
-    /// How media reaches the other players:
-    ///   Auto  — direct P2P first; any peer without a validated UDP path is served
-    ///           over the voice server instead, so a failed hole punch never means
-    ///           silence;
-    ///   P2P   — direct only, never the server (the strict mode);
-    ///   Relay — everything through the voice server (the original scheme).
-    ///
-    /// The mode is snapshotted when a room connects; the settings panel
-    /// reconnects the room after a change, the same way a server switch does.
-    /// </summary>
-    public static string TransportMode
+    /// <summary>NAT fix (BCL's natFix): skip hole punching and relay every peer
+    /// through TURN from the start. Default off — the automatic TURN fallback
+    /// already rescues failed punches, and forcing relay makes every voice take
+    /// the long way. The server's forceRelayOnly has the same effect and is not
+    /// overridable (it arrives per connect in clientPeerConfig).</summary>
+    public static bool NatFix
     {
-        get { var v = _transportMode?.Value; return v is "Auto" or "Relay" ? v : "P2P"; }
-        set { if (_transportMode != null) _transportMode.Value = value; }
+        get => _natFix?.Value ?? false;
+        set { if (_natFix != null) _natFix.Value = value; }
     }
+
+    /// <summary>Manual TURN region ("" = the stepper's Auto option: race every
+    /// relay the server sent and keep the lowest-latency one). Options come
+    /// from the region tags in the server's config.</summary>
+    public static string TurnRegion
+    {
+        get => _turnRegion?.Value ?? "";
+        set { if (_turnRegion != null) _turnRegion.Value = value; }
+    }
+
+    /// <summary>Optional local TURN override. All three default to empty: by
+    /// default every credential arrives with clientPeerConfig and nothing
+    /// sensitive exists in this file. A non-empty URL pins TURN to that server
+    /// regardless of region or latency (escape hatch for a private relay).</summary>
+    public static string TurnOverrideUrl => _turnOverrideUrl?.Value ?? "";
+    public static string TurnOverrideUsername => _turnOverrideUser?.Value ?? "";
+    public static string TurnOverrideCredential => _turnOverridePass?.Value ?? "";
 
     private const string DefaultStunServers =
         "stun:stun.l.google.com:19302," +
@@ -557,8 +557,6 @@ public static class VoiceConfig
     public static bool DeviceSelectionSupported =>
         Application.platform != RuntimePlatform.Android;
 
-    private static ConfigEntry<int>? _serverIndex;
-    private static ConfigEntry<string>? _customUrl;
     private static ConfigEntry<string>? _mic, _speaker;
     private static ConfigEntry<float>? _masterVol, _micVol;
     private static ConfigEntry<float>? _hotkeyBtnScale;
@@ -574,7 +572,14 @@ public static class VoiceConfig
     private static ConfigEntry<string>? _savedPlayerVolumes;
     private static ConfigEntry<string>? _savedPlayerAutoVolume;
     private static ConfigEntry<string>? _p2pStun;
-    private static ConfigEntry<string>? _transportMode;
+    // NAT fix / TURN selection — deliberately no-secret: TURN credentials arrive
+    // per connect with the server's clientPeerConfig (Network.IceConfig), never
+    // from this file; the override triple below defaults to empty.
+    private static ConfigEntry<bool>? _natFix;
+    private static ConfigEntry<string>? _turnRegion;
+    private static ConfigEntry<string>? _turnOverrideUrl;
+    private static ConfigEntry<string>? _turnOverrideUser;
+    private static ConfigEntry<string>? _turnOverridePass;
     private static ConfigEntry<string>? _settingsKey, _publicLobbyKey, _playerVolumeKey;
     /// <summary>One-shot marker: the SettingsPanel default moved F1 -> F11 once, so a cfg
     /// written before that move is migrated exactly once and never touched again.</summary>
@@ -619,12 +624,8 @@ public static class VoiceConfig
 
     public static void Init(ConfigFile cfg)
     {
-        var serverNames = ServerList.GetServerNames();
-
-        _serverIndex = cfg.Bind("VoiceChat.Server", "ServerIndex", 0,
-            new ConfigDescription("Selected server index", new AcceptableValueRange<int>(0, serverNames.Length - 1)));
-        _customUrl = cfg.Bind("VoiceChat.Server", "CustomURL", "",
-            "Custom BCL server URL (used when last server option is selected).");
+        // Server selection is gone: BCL mode dials the one forced URL — see
+        // GetActiveServerURL() / ForcedServerUrl. Nothing here to bind.
 
         _mic = cfg.Bind("VoiceChat", "MicrophoneDevice", "", "Microphone device name.");
         _speaker = cfg.Bind("VoiceChat", "SpeakerDevice", "", "Speaker device name.");
@@ -673,13 +674,25 @@ public static class VoiceConfig
         LoadPlayerVolumes();
 
         _p2pStun = cfg.Bind("VoiceChat.P2P", "StunServers", DefaultStunServers,
-            "Comma-separated STUN servers for hole punching (stun:host:port). Append your own here.");
+            "Fallback STUN servers for hole punching (stun:host:port) — used only when the " +
+            "server's clientPeerConfig sends none. Append your own here.");
 
-        _transportMode = cfg.Bind("VoiceChat.P2P", "Transport", "P2P",
-            new ConfigDescription(
-                "Media transport: P2P = direct only (default); Auto = direct P2P with server-relay " +
-                "fallback; Relay = voice server relay only (original scheme).",
-                new AcceptableValueList<string>("Auto", "P2P", "Relay")));
+        _natFix = cfg.Bind("VoiceChat.P2P", "NatFix", false,
+            "NAT fix (BCL natFix): skip hole punching and relay every voice through TURN " +
+            "from the start. Off by default — the automatic TURN fallback rescues failed " +
+            "punches without pinning every conversation to a relay. The server's " +
+            "forceRelayOnly forces this on for all players regardless of this setting.");
+        _turnRegion = cfg.Bind("VoiceChat.P2P", "TurnRegion", "",
+            "TURN region (empty = the settings stepper's Auto option: lowest latency). " +
+            "Matched against the region tags in the server's config.");
+        _turnOverrideUrl = cfg.Bind("VoiceChat.P2P", "TurnServerUrl", "",
+            "Optional local TURN override (turn:host:port). Leave empty — the normal case — " +
+            "to use the server-provided list; a non-empty value pins TURN to this server and " +
+            "ignores region/latency. Credentials for server TURNs never live in this file.");
+        _turnOverrideUser = cfg.Bind("VoiceChat.P2P", "TurnUsername", "",
+            "Username for TurnServerUrl (empty unless you pinned your own TURN).");
+        _turnOverridePass = cfg.Bind("VoiceChat.P2P", "TurnCredential", "",
+            "Password for TurnServerUrl (empty unless you pinned your own TURN).");
 
         _settingsKey = cfg.Bind("VoiceChat.Keybinds", "SettingsPanel", KeyCode.F11.ToString(),
             "Key that opens the voice settings panel (and closes it again).");
@@ -745,36 +758,6 @@ public static class VoiceConfig
     }
 }
 
-/// <summary>
-/// BCL server list — mirrors the server options available in BetterCrewLink.
-/// </summary>
-public static class ServerList
-{
-    private static readonly (string Name, string URL)[] BuiltInDefaults =
-    {
-        ("BetterCrewLink Official", "https://bettercrewl.ink"),
-        ("China,Beijing (AmongUsClub)", "https://bcl.server.amongusclub.cn"),
-        ("North America (AmongUsClub)", "https://bcl-na.server.amongusclub.cn"),
-    };
-
-    /// <summary>
-    /// Returns the remotely-fetched server list (see Network.RemoteServerList)
-    /// when one is available, otherwise the built-in defaults above. Call
-    /// Network.RemoteServerList.RefreshIfNeeded(...) periodically (e.g. on
-    /// settings-window open) to keep this up to date without a client update.
-    /// </summary>
-    public static IReadOnlyList<(string Name, string URL)> GetServers()
-    {
-        return Interstellar.Network.RemoteServerList.Cached ?? BuiltInDefaults;
-    }
-
-    public static string[] GetServerNames()
-    {
-        var servers = GetServers();
-        var names = new string[servers.Count + 1]; // +1 for Custom
-        for (int i = 0; i < servers.Count; i++)
-            names[i] = servers[i].Name;
-        names[^1] = "Custom...";
-        return names;
-    }
-}
+// The old BCL server list (built-in defaults + remote server.json + Custom…)
+// is gone: BCL mode dials VoiceConfig.ForcedServerUrl and nothing else, so
+// there is nothing left to enumerate.

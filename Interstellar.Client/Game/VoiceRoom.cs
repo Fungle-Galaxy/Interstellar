@@ -453,6 +453,19 @@ public class VoiceRoom
         return null;
     }
 
+    /// <summary>Refresh the voice connection by re-joining the room: a fresh
+    /// server sid makes every peer drop our old session and session us from
+    /// scratch. The in-place P2P rebuild kept the peers' old session objects —
+    /// probes flowed again but media never resumed — while a re-join always
+    /// recovers (the long-standing manual workaround, now automatic). Used by
+    /// the NAT-fix / TURN-region toggles and the manual refresh button; Start()
+    /// preserves the mic/speaker choice.</summary>
+    public void RestartTransport(string reason)
+    {
+        InterstellarPlugin.Logger.LogInfo("[VC] Room refresh (" + reason + ")");
+        RestartForCurrentGame();
+    }
+
     public void Rejoin()
     {
         _interstellar.Rejoin();

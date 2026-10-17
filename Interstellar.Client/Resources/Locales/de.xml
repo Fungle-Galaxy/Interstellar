@@ -48,7 +48,6 @@
   <string name="vc.splash.optimalPlayers">Optimale Kapazität</string>
   <string name="vc.splash.currentPlayers">Aktuell online</string>
   <string name="vc.splash.madeBy">Entwickelt von</string>
-  <string name="vc.splash.sponsorBy">Gesponsert von</string>
   <string name="vc.volume.title">Spieler-Lautstärken</string>
   <string name="vc.volume.noPlayers">Keine Spieler im Raum</string>
   <string name="vc.update.title">Interstellar Voice Chat Update</string>
@@ -77,4 +76,25 @@
   <string name="vc.common.on">AN</string>
   <string name="vc.common.off">AUS</string>
   <string name="vc.player.auto">Auto</string>
+  <string name="vc.cat.connection">Verbindung</string>
+  <string name="vc.settings.natFix">NAT-Fix</string>
+  <string name="vc.settings.turnRegion">TURN-Region</string>
+  <string name="vc.settings.turnRegion.auto">Automatisch</string>
+  <string name="vc.hud.natfix">TURN-Relay (NAT-Fix)</string>
+  <string name="vc.settings.help.natFix">Leitet die gesamte Sprache von Anfang an über einen Relay-Server, statt eine direkte Verbindung zwischen Spielern zu versuchen. Schalte es nur ein, wenn ihr euch dauerhaft nicht hören könnt – der Preis ist etwas mehr Verzögerung für alle im Raum.</string>
+  <string name="vc.settings.help.turnRegion">Welche Region der Relay-Server genutzt wird. „Automatisch“ wählt immer die mit der niedrigsten Latenz; wähle eine bestimmte Region nur, wenn du sie erzwingen möchtest. Die meisten Spieler lassen „Automatisch“ aktiviert.</string>
+  <string name="vc.hud.conn.connecting">Verbindung zum Voice-Chat-Server wird hergestellt… ({0}/{1})</string>
+  <string name="vc.hud.conn.retry">Voice-Chat-Server nicht erreichbar — neuer Versuch in {0}s ({1}/{2})</string>
+  <string name="vc.hud.conn.failed">Verbindung zum Voice-Chat-Server fehlgeschlagen</string>
+  <string name="vc.hud.p2p.allrelay">P2P · TURN-Relais </string>
+  <string name="vc.hud.p2p.alldirect">P2P · direkt </string>
+  <string name="vc.hud.p2p.mixed">P2P · Relais/direkt </string>
+  <string name="vc.hud.p2p.turnwait">TURN: warte auf Serverkonfiguration…</string>
+  <string name="vc.hud.p2p.turnalloc">TURN: wird zugewiesen…</string>
+  <string name="vc.hud.p2p.waitpeer">warte auf Gegenspieler…</string>
+  <string name="vc.hud.p2p.announce">tausche Relais-Ankündigungen…</string>
+  <string name="vc.hud.p2p.wiring">binde Kanal / teste…</string>
+  <string name="vc.settings.refreshConn">Verbindung neu aufbauen</string>
+  <string name="vc.settings.refreshConnBtn">Aktualisieren</string>
+  <string name="vc.settings.help.refreshConn">Baut die Sprachverbindung von Grund auf neu — sinnvoll, wenn keine Tönungen ankommen oder der Status unten links hängt. Dauert ein paar Sekunden; Mikrofon- und Lautsprechereinstellungen bleiben erhalten.</string>
 </resources>

@@ -48,7 +48,6 @@
   <string name="vc.splash.optimalPlayers">최적 수용 인원</string>
   <string name="vc.splash.currentPlayers">현재 접속자</string>
   <string name="vc.splash.madeBy">개발자</string>
-  <string name="vc.splash.sponsorBy">후원</string>
   <string name="vc.volume.title">플레이어 볼륨</string>
   <string name="vc.volume.noPlayers">방에 플레이어가 없습니다</string>
   <string name="vc.update.title">인터스텔라 보이스 채팅 업데이트</string>
@@ -77,4 +76,25 @@
   <string name="vc.common.on">켜짐</string>
   <string name="vc.common.off">꺼짐</string>
   <string name="vc.player.auto">자동</string>
+  <string name="vc.cat.connection">연결</string>
+  <string name="vc.settings.natFix">NAT 수정</string>
+  <string name="vc.settings.turnRegion">TURN 지역</string>
+  <string name="vc.settings.turnRegion.auto">자동</string>
+  <string name="vc.hud.natfix">TURN 릴레이 (NAT 수정)</string>
+  <string name="vc.settings.help.natFix">플레이어 간 직접 연결을 시도하지 않고 처음부터 모든 음성을 중계 서버로 보냅니다. 서로 들리지 않을 때만 켜세요. 대신 방에 있는 모두에게 약간의 지연이 추가됩니다.</string>
+  <string name="vc.settings.help.turnRegion">사용할 중계 서버 지역입니다. '자동'은 항상 가장 빠르게 응답하는 것을 선택합니다. 특정 지역을 고정하고 싶을 때만 직접 선택하세요. 대부분의 플레이어는 '자동'으로 두면 됩니다.</string>
+  <string name="vc.hud.conn.connecting">보이스 채팅 서버에 연결 중… ({0}/{1})</string>
+  <string name="vc.hud.conn.retry">서버에 연결할 수 없음 — {0}초 후 재시도 ({1}/{2})</string>
+  <string name="vc.hud.conn.failed">보이스 채팅 서버 연결 실패</string>
+  <string name="vc.hud.p2p.allrelay">P2P · TURN 릴레이 </string>
+  <string name="vc.hud.p2p.alldirect">P2P · 직접 연결 </string>
+  <string name="vc.hud.p2p.mixed">P2P · 릴레이/직접 </string>
+  <string name="vc.hud.p2p.turnwait">TURN: 서버 설정 대기 중…</string>
+  <string name="vc.hud.p2p.turnalloc">TURN: 할당 중…</string>
+  <string name="vc.hud.p2p.waitpeer">상대방 대기 중…</string>
+  <string name="vc.hud.p2p.announce">릴레이 알림 교환 중…</string>
+  <string name="vc.hud.p2p.wiring">채널 바인딩/탐색 중…</string>
+  <string name="vc.settings.refreshConn">음성 연결 새로 고침</string>
+  <string name="vc.settings.refreshConnBtn">새로 고침</string>
+  <string name="vc.settings.help.refreshConn">음성 연결을 처음부터 다시 만듭니다 — 소리가 나지 않거나 왼쪽 아래 상태가 멈춰 있을 때 사용하세요. 몇 초 걸리며 마이크·스피커 설정은 유지됩니다.</string>
 </resources>

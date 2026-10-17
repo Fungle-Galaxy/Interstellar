@@ -53,7 +53,6 @@ public class InterstellarPlugin : BasePlugin
         TranslationHelper.Load();
 
         // Register IL2CPP types
-        ClassInjector.RegisterTypeInIl2Cpp<JoinSplashScreen.SplashCoroutineRunner>();
         ClassInjector.RegisterTypeInIl2Cpp<VoiceSettingsWindow>();
         ClassInjector.RegisterTypeInIl2Cpp<PublicLobbyWindow>();
         ClassInjector.RegisterTypeInIl2Cpp<PlayerVolumeWindow>();
@@ -73,6 +72,27 @@ public class InterstellarPlugin : BasePlugin
         Harmony harmony = new(Id);
         harmony.PatchAll(Assembly.GetExecutingAssembly());
 
-        Logger.LogInfo("[VC] Interstellar loaded.");
+        Logger.LogInfo("[VC] Interstellar loaded build=" + BuildFingerprint() + ".");
+    }
+
+    /// <summary>
+    /// First 8 hex chars of the running plugin dll's SHA256. Logged at startup so any
+    /// pasted log unambiguously shows which build a machine is actually running —
+    /// relay fixes are impossible to debug when both machines may be on old binaries.
+    /// </summary>
+    private static string BuildFingerprint()
+    {
+        try
+        {
+            string path = Assembly.GetExecutingAssembly().Location;
+            if (string.IsNullOrEmpty(path)) return "unknown";
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            using var fs = System.IO.File.OpenRead(path);
+            byte[] hash = sha.ComputeHash(fs);
+            var sb = new System.Text.StringBuilder(8);
+            for (int i = 0; i < 4; i++) sb.Append(hash[i].ToString("X2"));
+            return sb.ToString();
+        }
+        catch { return "unknown"; }
     }
 }

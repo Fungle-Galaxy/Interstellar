@@ -48,7 +48,6 @@
   <string name="vc.splash.optimalPlayers">最適容量</string>
   <string name="vc.splash.currentPlayers">現在のオンライン</string>
   <string name="vc.splash.madeBy">開発者</string>
-  <string name="vc.splash.sponsorBy">スポンサー</string>
   <string name="vc.volume.title">プレイヤー音量</string>
   <string name="vc.volume.noPlayers">ルームにプレイヤーがいません</string>
   <string name="vc.update.title">インターステラ ボイスチャット 更新</string>
@@ -77,4 +76,25 @@
   <string name="vc.common.on">オン</string>
   <string name="vc.common.off">オフ</string>
   <string name="vc.player.auto">自動</string>
+  <string name="vc.cat.connection">接続</string>
+  <string name="vc.settings.natFix">NAT 修正</string>
+  <string name="vc.settings.turnRegion">TURN リージョン</string>
+  <string name="vc.settings.turnRegion.auto">自動</string>
+  <string name="vc.hud.natfix">TURNリレー（NAT 修正）</string>
+  <string name="vc.settings.help.natFix">音声を最初からすべて中継サーバー経由で送り、プレイヤー同士の直接接続を試みません。どうしても相手が聞こえない場合のみ有効にしてください。代わりに、部屋の全員の遅延が少し増えます。</string>
+  <string name="vc.settings.help.turnRegion">中継サーバーのリージョンを選択します。「自動」は常に最も速く応答するものを選びます。特定のリージョンに固定したい場合のみ手動で選んでください。ほとんどのプレイヤーは「自動」のままで問題ありません。</string>
+  <string name="vc.hud.conn.connecting">ボイスチャットサーバーに接続中…（{0}/{1}）</string>
+  <string name="vc.hud.conn.retry">サーバーに接続できません——{0} 秒後に再試行します（{1}/{2}）</string>
+  <string name="vc.hud.conn.failed">ボイスチャットサーバーに接続できませんでした</string>
+  <string name="vc.hud.p2p.allrelay">P2P · TURNリレー </string>
+  <string name="vc.hud.p2p.alldirect">P2P · 直接 </string>
+  <string name="vc.hud.p2p.mixed">P2P · リレー/直接 </string>
+  <string name="vc.hud.p2p.turnwait">TURN：サーバー設定を待機中…</string>
+  <string name="vc.hud.p2p.turnalloc">TURN：割り当て中…</string>
+  <string name="vc.hud.p2p.waitpeer">相手の参加を待機中…</string>
+  <string name="vc.hud.p2p.announce">リレー通知を交換中…</string>
+  <string name="vc.hud.p2p.wiring">チャネル束縛/探測中…</string>
+  <string name="vc.settings.refreshConn">音声接続を再読み込み</string>
+  <string name="vc.settings.refreshConnBtn">再読み込み</string>
+  <string name="vc.settings.help.refreshConn">音声接続をゼロから作り直します——音が出ない場合や左下のステータスが固まっている場合に使ってください。数秒かかります。マイクとスピーカーの設定は保持されます。</string>
 </resources>

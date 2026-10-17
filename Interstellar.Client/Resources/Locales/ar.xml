@@ -48,7 +48,6 @@
   <string name="vc.splash.optimalPlayers">السعة المثلى</string>
   <string name="vc.splash.currentPlayers">المتصلون حالياً</string>
   <string name="vc.splash.madeBy">طور بواسطة</string>
-  <string name="vc.splash.sponsorBy">برعاية</string>
   <string name="vc.volume.title">أصوات اللاعبين</string>
   <string name="vc.volume.noPlayers">لا يوجد لاعبون في الغرفة</string>
   <string name="vc.update.title">تحديث إنترستلر للمحادثة الصوتية</string>
@@ -77,4 +76,25 @@
   <string name="vc.common.on">تشغيل</string>
   <string name="vc.common.off">إيقاف</string>
   <string name="vc.player.auto">تلقائي</string>
+  <string name="vc.cat.connection">الاتصال</string>
+  <string name="vc.settings.natFix">إصلاح NAT</string>
+  <string name="vc.settings.turnRegion">منطقة TURN</string>
+  <string name="vc.settings.turnRegion.auto">تلقائي</string>
+  <string name="vc.hud.natfix">إعادة بث TURN (إصلاح NAT)</string>
+  <string name="vc.settings.help.natFix">يمرّر كل الصوت عبر خادم الترحيل من البداية بدلًا من محاولة اتصال مباشر بين اللاعبين. شغّله فقط إذا لم تستطع سماع بعضكم البعض إطلاقًا؛ والثمن هو تأخير بسيط إضافي لجميع من في الغرفة.</string>
+  <string name="vc.settings.help.turnRegion">أي منطقة من خوادم الترحيل تُستخدم. يختار «تلقائيًا» دائمًا الأسرع استجابة؛ اختر منطقة محددة فقط إذا أردت فرضها. يفضّل أن يبقى معظم اللاعبين على «تلقائي».</string>
+  <string name="vc.hud.conn.connecting">جارٍ الاتصال بخادم الدردشة الصوتية… ({0}/{1})</string>
+  <string name="vc.hud.conn.retry">تعذر الوصول إلى الخادم — إعادة المحاولة خلال {0} ثانية ({1}/{2})</string>
+  <string name="vc.hud.conn.failed">فشل الاتصال بخادم الدردشة الصوتية</string>
+  <string name="vc.hud.p2p.allrelay">P2P · مُرحِّل TURN </string>
+  <string name="vc.hud.p2p.alldirect">P2P · مباشر </string>
+  <string name="vc.hud.p2p.mixed">P2P · مُرحِّل/مباشر </string>
+  <string name="vc.hud.p2p.turnwait">TURN: بانتظار إعدادات الخادم…</string>
+  <string name="vc.hud.p2p.turnalloc">TURN: جارٍ التخصيص…</string>
+  <string name="vc.hud.p2p.waitpeer">بانتظار اللاعب الآخر…</string>
+  <string name="vc.hud.p2p.announce">تبادل إعلانات المُرحِّل…</string>
+  <string name="vc.hud.p2p.wiring">ربط القناة / الفحص…</string>
+  <string name="vc.settings.refreshConn">إعادة بناء اتصال الصوت</string>
+  <string name="vc.settings.refreshConnBtn">تحديث</string>
+  <string name="vc.settings.help.refreshConn">يعيد بناء اتصال الصوت من الصفر — استخدمه إذا توقف الصوت (لا صوت أو علامة الحالة السفلية عالقة). يستغرق بضع ثوانٍ؛ تُحتفظ بإعدادات الميكروفون والسماعة.</string>
 </resources>

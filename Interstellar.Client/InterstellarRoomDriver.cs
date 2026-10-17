@@ -9,7 +9,6 @@ internal static class InterstellarRoomDriver
 {
     private static bool _wasInIntro = false;
     private static bool _wasInEndGame = false;
-    private static bool _splashShownThisGame;
 
     private static bool IsLocalServer()
     {
@@ -30,7 +29,6 @@ internal static class InterstellarRoomDriver
             if (VoiceRoom.Current != null)
                 VoiceRoom.CloseCurrentRoom();
             _wasInIntro = _wasInEndGame = false;
-            _splashShownThisGame = false;
             VoiceServerState.Reset();
             return;
         }
@@ -55,13 +53,6 @@ internal static class InterstellarRoomDriver
             VoiceRoom.Current!.ForceUpdateLocalProfile();
 
             InterstellarPlugin.Logger.LogInfo($"[VC] Room started: region={region} room={roomId}");
-
-            // Show join splash — once per game session, for all players including host
-            if (!_splashShownThisGame)
-            {
-                _splashShownThisGame = true;
-                JoinSplashScreen.Show();
-            }
         }
 
         if (VoiceRoom.Current == null) return;

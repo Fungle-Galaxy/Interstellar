@@ -72,9 +72,7 @@ public class VoiceSettingsWindow : MonoBehaviour
                 if (opt) { try { opt.Close(); } catch { } }
             }
 
-            // Kick off a background refresh of the remote server list so the panel
-            // reflects server.json changes without a client update.
-            try { Interstellar.Network.RemoteServerList.RefreshIfNeeded(this); } catch { }
+
 
             Interstellar.UI.VoiceSettingsPanel.Show();
         }

@@ -177,56 +177,82 @@ public static class InterstellarHudState
         string serverUrl = VoiceServerState.HasInfo ? VoiceServerState.VoiceServerUrl : VoiceConfig.GetActiveServerURL();
         if (string.IsNullOrEmpty(serverUrl)) { _serverInfoText.text = ""; return; }
 
-        string serverName = ResolveServerName(serverUrl);
         int cur = 0;
         foreach (var _ in room.AllClients) cur++;
         int opt = VoiceServerState.OptimalPlayers;
-        string transport = "  ·  " + TransportLabel();
         var ok = new Color(0.6f, 0.85f, 0.6f);
         var warn = new Color(1f, 0.65f, 0.2f);
 
-        // P2P direct pushes no media through the server, so printing its name reads as
-        // if voice still went through it: lead with the transport instead. The roster
-        // count stays (still your room), and so does the capacity warning — the server
-        // is still what admits new signups.
-        if (VoiceConfig.TransportMode == "P2P")
+        // From the moment a room is entered this chip narrates the connection
+        // flow until the socket is up: the attempt counter while connecting, a
+        // visible 3s countdown after each failure, and a parked "failed" after
+        // the third one (a new room starts the cycle over).
+        Interstellar.Network.VoiceConnStatus.GetState(out var phase, out var attempt, out var retryIn);
+        if (phase == Interstellar.Network.VoiceConnStatus.Phase.Connecting)
         {
-            _serverInfoText.text = TransportLabel() + (opt > 0 ? "  " + cur + "/" + opt : "  " + cur);
-            _serverInfoText.color = opt > 0 && cur >= opt ? warn : ok;
+            _serverInfoText.text = string.Format(
+                TranslationHelper.Get("vc.hud.conn.connecting", "Connecting to voice server… ({0}/{1})"),
+                attempt, Interstellar.Network.VoiceConnStatus.MaxAttempts);
+            _serverInfoText.color = ok;
+            return;
+        }
+        if (phase == Interstellar.Network.VoiceConnStatus.Phase.Retrying)
+        {
+            _serverInfoText.text = string.Format(
+                TranslationHelper.Get("vc.hud.conn.retry", "Voice server unreachable — retrying in {0}s ({1}/{2})"),
+                retryIn, attempt + 1, Interstellar.Network.VoiceConnStatus.MaxAttempts);
+            _serverInfoText.color = warn;
+            return;
+        }
+        if (phase == Interstellar.Network.VoiceConnStatus.Phase.Failed)
+        {
+            _serverInfoText.text = TranslationHelper.Get("vc.hud.conn.failed", "Voice server connection failed");
+            _serverInfoText.color = new Color(1f, 0.35f, 0.35f);
             return;
         }
 
+        // Media path narration: ONE line at the original spot — the current
+        // connect step (TURN phase, peer handshake), collapsing to the REAL
+        // path summary (relay vs direct) once every peer is up, so a NAT-fix
+        // or region toggle is visible the moment it takes effect.
+        var p2p = Interstellar.Network.P2P.P2pTransport.Active;
+        string? progress = p2p != null ? p2p.DescribeProgress() : null;
+        if (progress != null)
+        {
+            _serverInfoText.text = opt > 0 ? progress + "  " + cur + "/" + opt : progress + "  " + cur;
+            _serverInfoText.color = ok;
+            return;
+        }
+
+        // Media never rides the server in BCL mode (direct UDP, TURN on failure),
+        // so the transport leads — printing the server's name first would read as
+        // if voice still went through it. The roster count stays (still your
+        // room), and so does the capacity warning: the server still admits
+        // signups and carries the signalling.
+        string lead = TransportLabel();
         if (opt > 0)
         {
-            _serverInfoText.text = TranslationHelper.Get("vc.hud.serverPrefix", "Interstellar Server: ") + serverName + "  " + cur + "/" + opt + transport;
+            _serverInfoText.text = lead + "  " + cur + "/" + opt;
             _serverInfoText.color = cur >= opt ? warn : ok;
         }
         else
         {
-            _serverInfoText.text = TranslationHelper.Get("vc.hud.serverPrefix", "Interstellar Server: ") + serverName + "  " + cur + transport;
+            _serverInfoText.text = lead + "  " + cur;
             _serverInfoText.color = ok;
         }
     }
 
-    /// <summary>Current media transport, in the panel's own words — so the HUD and the
-    /// settings row can never drift apart.</summary>
-    private static string TransportLabel() => VoiceConfig.TransportMode switch
+    /// <summary>Current media path, in the panel's own words — NAT fix (or the
+    /// server's forceRelayOnly) pins every peer to TURN; otherwise it is
+    /// direct-first with TURN fallback.</summary>
+    private static string TransportLabel()
     {
-        "P2P" => TranslationHelper.Get("vc.settings.transport.p2p", "P2P direct"),
-        "Relay" => TranslationHelper.Get("vc.settings.transport.relay", "Server relay"),
-        _ => TranslationHelper.Get("vc.settings.transport.auto", "Auto (P2P + relay)"),
-    };
-
-    private static string ResolveServerName(string url)
-    {
-        var servers = ServerList.GetServers();
-        foreach (var (name, serverUrl) in servers)
-        {
-            if (string.Equals(serverUrl.TrimEnd('/'), url.TrimEnd('/'), System.StringComparison.OrdinalIgnoreCase))
-                return name;
-        }
-        return ShortenServerUrl(url);
+        if (VoiceConfig.NatFix || Interstellar.Network.IceConfig.ForceRelayOnly)
+            return TranslationHelper.Get("vc.hud.natfix", "TURN relay (NAT fix)");
+        return TranslationHelper.Get("vc.settings.transport.auto", "P2P + TURN");
     }
+
+    private static string ResolveServerName(string url) => VoiceConfig.GetServerLocationName(url);
 
     static string ShortenServerUrl(string url)
     {

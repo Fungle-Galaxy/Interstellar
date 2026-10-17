@@ -32,16 +32,17 @@ internal class ServerConnection : IConnectionContext, IDisposable
     /// <summary>P2P media transport: STUN discovery, hole punching and the sealed
     /// UDP media path. Media lives here; the websocket is control-plane only.</summary>
     private P2pTransport? _p2p;
-    /// <summary>Transport mode snapshotted when this connection was created —
-    /// Auto (P2P first, server relay per peer without a path) / P2P (direct only)
-    /// / Relay (server relay only, the original scheme). The settings panel
-    /// restarts the room after a change, so this never needs to change live.</summary>
-    private readonly string _transport;
     private int _localPlayerId, _localClientId;
     private bool _hasIds;
     private bool _joinIssued;
     private bool _joinPending;
     private bool _socketReady;
+    /// <summary>The socket.io handshake completed on the current RunLoop
+    /// iteration. Kept across the reconnect boundary so the loop can tell
+    /// "server closed a healthy session" (routine, reconnect immediately)
+    /// apart from "connection never came up" (the visible three-attempt
+    /// flow the user asked for).</summary>
+    private bool _handshakeDone;
 
     private readonly ConcurrentDictionary<string, (int playerId, int clientId)> _peers = new();
     // Per-peer liveness: the server never tells us a peer died, so we prove the
@@ -124,13 +125,20 @@ internal class ServerConnection : IConnectionContext, IDisposable
     private Timer? _pingTimer;
     private int _pingInterval = 25000;
     private int _lastReceiveTick = Environment.TickCount;
-    // Engine.IO v3 (socket.io 2.4.x): the *client* pings every pingInterval and
-    // the server answers pong (verified in engine.io@3.4.2 lib/socket.js) — the
-    // server never pings on its own. So traffic only exists if we ask for it:
-    // ping every 5s, and treat 15s of silence (3 missed pongs) as a dead socket.
+    // Engine.IO v3 (socket.io 2.4.x): the *client* pings and the server answers
+    // pong — the forced bcl.server.amongusclub.cn instance works exactly that
+    // way (its EIO=3 mode never pings on its own: it only watches for our pings
+    // and closes after pingInterval+pingTimeout of silence). A room where
+    // nobody speaks carries no other traffic, so that heartbeat is the whole
+    // connection's lifeline: ping every 5s from the start, and abort only after
+    // the server's announced pingInterval plus a full extra interval of grace —
+    // see AbortAfterSilenceMs.
     private const int PingPeriodMs = 5000;
     private const int NoDataAbortMs = 15000;
-    private const int RetryDelayMs = 1000;
+    // Visible connect flow: attempts are counted per room (reset on a
+    // completed handshake), and the pacing constants live in VoiceConnStatus so
+    // the loop's delay and the HUD's countdown cannot drift apart.
+    private int _attempt;
     // Local mic state, kept here so it can be re-announced after a reconnect
     // (the room restarts with a fresh connection object).
     private bool _lastMute;
@@ -143,19 +151,15 @@ internal class ServerConnection : IConnectionContext, IDisposable
         var u = new Uri(url);
         _httpOrigin = u.Scheme + "://" + u.Host;
         // Always use EIO=3 (Engine.IO v3), matching the official BetterCrewLink
-        // client (socket.io-client 2.4.0) which works on both the Cloudflare
-        // official server and the EdgeOne servers. EIO=4 breaks the Cloudflare
-        // server when we don't actively send the "40" connect packet.
+        // client (socket.io-client 2.4.0). HandleOpen actively sends the "40"
+        // namespace connect: EIO=3 servers wait for it and never push one
+        // themselves, so passively waiting left the socket.io layer dead.
         _wsUrl = (u.Scheme == "https" ? "wss" : "ws") + "://" + u.Host + (u.IsDefaultPort ? "" : ":" + u.Port) + "/socket.io/?EIO=3&transport=websocket";
-        // Snapshot the mode from config; the panel restarts the room on change.
-        _transport = VoiceConfig.TransportMode;
-        // The P2P socket is always created, even in Relay mode: it is what lets a
-        // peer pinned to strict P2P still be heard by us (their frames arrive on
-        // UDP and are accepted regardless of our transmit mode). The mode only
-        // decides where our own media goes.
+        // One transport, BCL semantics: direct UDP first, TURN when the punch
+        // fails (or from the start under NAT fix). The websocket is control-plane
+        // only — media never rides it.
         _p2p = new P2pTransport(OnP2pAudio, SendP2pSignal);
         _p2p.Start();
-        InterstellarPlugin.Logger.LogInfo("[Srv] transport=" + _transport);
         StartConnectLoop();
     }
 
@@ -171,6 +175,24 @@ internal class ServerConnection : IConnectionContext, IDisposable
         {
             while (!_disposed)
             {
+                if (_handshakeDone)
+                {
+                    // The previous socket reached Connected and was then closed
+                    // by the peer. The forced BCL server did exactly that to
+                    // every websocket (fixed 30s read deadline — fixed on the
+                    // server, but old deployments still run), so treat it as
+                    // routine maintenance: reconnect right away without burning
+                    // one of the three visible attempts or flashing the retry
+                    // countdown. Rejoin + roster restore are sub-second.
+                    InterstellarPlugin.Logger.LogInfo(
+                        "[Srv] Session closed after a completed connect — reconnecting immediately.");
+                }
+                else
+                {
+                    _attempt++;
+                    VoiceConnStatus.SetConnecting(_attempt);
+                }
+                _handshakeDone = false;
                 _cts?.Cancel();
                 _cts = new CancellationTokenSource();
                 var token = _cts.Token;
@@ -186,20 +208,22 @@ internal class ServerConnection : IConnectionContext, IDisposable
                     // Watchdog starts with the socket, not with the handshake: a
                     // server that accepts the connection and then never sends the
                     // Engine.IO open packet would otherwise hang ReceiveAsync
-                    // forever. Pings still only go out once `_connected` (after
-                    // the socket.io "40"), so the abort below doubles as a
-                    // "handshake never completed" detector.
+                    // forever. Engine pings go out unconditionally: EIO=3 servers
+                    // never ping on their own, and gating them on `_connected` —
+                    // which this server only flips after we send "40" (see
+                    // HandleOpen) — used to leave it with nothing to read, so it
+                    // dropped us at its 30s watchdog before join ever went out.
                     _pingTimer?.Dispose();
                     _pingTimer = new Timer(_ =>
                     {
-                        if (_connected) SendRaw("2");
+                        SendRaw("2");
                         if (_connected)
                         {
                             SendHeartbeats();
                             CheckHeartbeats();
                         }
                         int silent = unchecked(Environment.TickCount - _lastReceiveTick);
-                        if (silent > NoDataAbortMs)
+                        if (silent > AbortAfterSilenceMs())
                         {
                             InterstellarPlugin.Logger.LogWarning(
                                 $"[Srv] No data for {silent}ms — forcing reconnect.");
@@ -229,7 +253,28 @@ internal class ServerConnection : IConnectionContext, IDisposable
                 }
 
                 if (_disposed) break;
-                try { await Task.Delay(RetryDelayMs, token); } catch { break; }
+                if (_handshakeDone)
+                {
+                    // Healthy session the server closed: loop back to the
+                    // immediate-reconnect branch above. The short delay is only
+                    // there so a server that accepts-and-drops cannot turn this
+                    // into a hot loop.
+                    try { await Task.Delay(1000, token); } catch { break; }
+                    continue;
+                }
+                // The connect flow is bounded and visible: a failure parks for
+                // VoiceConnStatus.RetryDelayMs (the HUD counts it down) before the
+                // next of three tries; the third failure parks on the failed state
+                // until a new room starts a fresh cycle.
+                if (_attempt >= VoiceConnStatus.MaxAttempts)
+                {
+                    InterstellarPlugin.Logger.LogWarning(
+                        "[Srv] " + VoiceConnStatus.MaxAttempts + " connection attempts failed — giving up until the room restarts.");
+                    VoiceConnStatus.SetFailed(_attempt);
+                    break;
+                }
+                VoiceConnStatus.SetRetrying(_attempt);
+                try { await Task.Delay(VoiceConnStatus.RetryDelayMs, token); } catch { break; }
             }
         }
         finally
@@ -239,6 +284,21 @@ internal class ServerConnection : IConnectionContext, IDisposable
             DropPeers();
             Interlocked.Exchange(ref _connecting, 0);
         }
+    }
+
+    /// <summary>
+    /// Liveness budget for the watchdog. Our own 5s pings (and the server's
+    /// pongs to them) are what keeps an idle room's socket fed — a room where
+    /// nobody speaks carries no other traffic at all. So the budget follows the
+    /// announced interval: the old fixed 15s aborted between two heartbeats on
+    /// EVERY idle connection (the reconnect churn that kept two local players
+    /// from ever pairing up).
+    /// </summary>
+    int AbortAfterSilenceMs()
+    {
+        int pi = _pingInterval;
+        if (pi <= 0) pi = 25000;
+        return Math.Max(NoDataAbortMs, pi + 20000);
     }
 
     /// <summary>
@@ -300,11 +360,16 @@ internal class ServerConnection : IConnectionContext, IDisposable
             _sid = r.TryGetProperty("sid", out var s) ? s.GetString() : "";
             _pingInterval = r.TryGetProperty("pingInterval", out var pi) ? pi.GetInt32() : 25000;
             InterstellarPlugin.Logger.LogInfo($"[Srv] Open sid={_sid} pingInterval={_pingInterval}ms");
-            // NOTE: Do NOT actively send the socket.io connect packet ("40") here.
-            // The official socket.io-client does not send it for the default namespace;
-            // it simply waits for the server to send "40". Actively sending it makes
-            // the Cloudflare-hosted (socket.io v4) server close the socket right after join.
-            // The server's "40" is handled in HandleSio (sioType == '0') which triggers join.
+            // Attach the default namespace ourselves — the "40" every socket.io
+            // 1.x/2.x (protocol v5) client sends right after the handshake.
+            // The forced BCL server only ever ANSWERS it ("40" back → HandleSio
+            // flips `_connected` → pings flow, join is scheduled); it never
+            // pushes a connect of its own. Waiting for one left `_connected`
+            // false forever: no engine pings went out (its 30s read watchdog then
+            // closed us) and join was never emitted (no roster, so two players
+            // could never pair). Servers that do push a connect answer this the
+            // same way — HandleSio's '0' branch is idempotent.
+            SendRaw("40");
         }
         catch { }
     }
@@ -318,8 +383,14 @@ internal class ServerConnection : IConnectionContext, IDisposable
         {
             _connected = true;
             _socketReady = true;
+            _handshakeDone = true;
             _joinIssued = false;
             _joinPending = false;
+            // A completed handshake is a successful attempt: any later drop
+            // restarts the three-attempt flow from the top, not from where the
+            // previous cycle stopped.
+            _attempt = 0;
+            VoiceConnStatus.SetConnected();
             if (_hasIds) _ = ScheduleJoinAsync();
             return;
         }
@@ -347,6 +418,18 @@ internal class ServerConnection : IConnectionContext, IDisposable
                 case "join": OnJoin(arr); break;
                 case "VAD": OnVAD(arr); break;
                 case "signal": OnSignal(arr); break;
+                case "clientPeerConfig":
+                    // BCL parity: pushed the moment the socket connects —
+                    // {forceRelayOnly, iceServers:[{urls, username, credential,
+                    // region}]}. This is where TURN credentials come from: the
+                    // client binary ships none, and nothing here is logged but
+                    // counts and region tags.
+                    if (arr.GetArrayLength() >= 2 && arr[1].ValueKind == JsonValueKind.Object)
+                    {
+                        Interstellar.Network.IceConfig.Apply(arr[1].GetRawText());
+                        _p2p?.SetStunServers();
+                    }
+                    break;
                 case "new_lobbies": PublicLobbyManager.OnNewLobbies(arr[1].GetRawText()); break;
                 case "update_lobby": PublicLobbyManager.OnUpdateLobby(arr[1].GetRawText()); break;
                 case "remove_lobby": PublicLobbyManager.OnRemoveLobby(arr[1].GetInt32()); break;
@@ -397,7 +480,12 @@ internal class ServerConnection : IConnectionContext, IDisposable
             InterstellarPlugin.Logger.LogWarning("[Srv] setClients payload not an object: " + clients.GetRawText());
             return;
         }
-        InterstellarPlugin.Logger.LogInfo("[Srv] setClients: " + clients.GetRawText());
+        // One short line on the console, the full roster only at Debug — a
+        // busy room dumps this JSON on every join/leave and buries the rest.
+        int peerCount = 0;
+        foreach (var _ in clients.EnumerateObject()) peerCount++;
+        InterstellarPlugin.Logger.LogInfo("[Srv] setClients: " + peerCount + " peer(s)");
+        InterstellarPlugin.Logger.LogDebug("[Srv] setClients: " + clients.GetRawText());
         var seen = new HashSet<string>();
         foreach (var kv in clients.EnumerateObject())
         {
@@ -525,16 +613,9 @@ internal class ServerConnection : IConnectionContext, IDisposable
             catch { }
             return;
         }
-        // Anything else is relayed media: base64 Opus on the "signal" event, the
-        // original scheme. It is accepted in every transport mode (a peer pinned
-        // to Relay, or an older client, must still be heard), so only our own
-        // transmit side is governed by the mode.
-        try
-        {
-            var opus = Convert.FromBase64String(dataStr);
-            if (opus.Length > 0) DecodeOpus(cid, opus);
-        }
-        catch { /* not base64 — a marker we don't know; ignore */ }
+        // Anything else is not ours: BCL mode never carries media on "signal" —
+        // the old base64 relay went away with the relay transport — so unknown
+        // markers are dropped silently (a warning would flood at marker rate).
     }
 
     void DecodeOpus(int clientId, byte[] opus, uint counter = 0, bool hasCounter = false)
@@ -976,40 +1057,13 @@ internal class ServerConnection : IConnectionContext, IDisposable
         }
     }
 
-    /// <summary>Route one encoded frame according to the snapshotted transport mode:
-    /// <b>Relay</b> — everything rides the server's "signal" event (the original
-    /// scheme, works with every BCL-compatible voice server as-is);
-    /// <b>P2P</b> — direct UDP only; a peer without a validated path stays silent;
-    /// <b>Auto</b> — per peer: direct when a validated path exists, server relay
-    /// when the hole punch has not produced one, so a failed punch degrades to
-    /// relayed audio instead of silence. Exactly one path is used per peer, so a
-    /// frame is never sent twice.</summary>
+    /// <summary>Route one encoded frame: BCL mode has a single path per peer — the
+    /// P2P transport sends direct UDP and switches that peer to TURN the moment
+    /// its punch fails (always TURN under NAT fix). The server's "signal" event
+    /// carries only control messages now, never media.</summary>
     void SendFrame(byte[] opus)
     {
-        if (_transport == "Relay") { SendRelayFrame(opus, null); return; }
-        if (_transport == "P2P") { _p2p?.SendAll(opus); return; }
-
-        // Auto: pick the path peer by peer. The base64 payload is built at most
-        // once per frame and shared by every peer that needs the relay.
-        string? payload = null;
-        foreach (var kv in _peers)
-        {
-            if (_p2p != null && _p2p.TrySendTo(kv.Key, opus)) continue;
-            payload ??= Convert.ToBase64String(opus);
-            Emit("signal", new { to = kv.Key, data = payload });
-        }
-    }
-
-    /// <summary>Server relay of one media frame: base64 Opus on the "signal"
-    /// event, either broadcast to every peer (<paramref name="onlySid"/> null)
-    /// or to a single peer.</summary>
-    void SendRelayFrame(byte[] opus, string? onlySid)
-    {
-        if (_peers.IsEmpty) return;
-        string payload = Convert.ToBase64String(opus);
-        if (onlySid != null) { Emit("signal", new { to = onlySid, data = payload }); return; }
-        foreach (var kv in _peers)
-            Emit("signal", new { to = kv.Key, data = payload });
+        _p2p?.SendAll(opus);
     }
 
     Concentus.IOpusEncoder? _encoder; byte[] _encBuf = new byte[2048];
@@ -1018,26 +1072,13 @@ internal class ServerConnection : IConnectionContext, IDisposable
         if (_encoder != null) return;
         _encoder = Concentus.OpusCodecFactory.CreateEncoder(48000, 1, Concentus.Enums.OpusApplication.OPUS_APPLICATION_VOIP);
         _encoder.UseVBR = true;
-        if (_transport == "Relay")
-        {
-            // Relayed frames ride TCP — nothing is lost on the wire, so spending
-            // ~15% of the payload on inband FEC would protect against an event that
-            // cannot happen here. Every bit goes to audio instead, and the relayed
-            // traffic shrinks by the same amount.
-            _encoder.Bitrate = 64000;
-            _encoder.UseInbandFEC = false;
-            _encoder.PacketLossPercent = 0;
-        }
-        else
-        {
-            // Direct UDP (and Auto's direct peers) can drop frames. FEC bits are
-            // cheap insurance: the receiver rebuilds the lost frame from the next
-            // packet's copy instead of playing a hole. P2P also spends the bitrate
-            // the relay would have carried — it goes straight to the peer.
-            _encoder.Bitrate = _transport == "P2P" ? 96000 : 64000;
-            _encoder.UseInbandFEC = true;
-            _encoder.PacketLossPercent = 15;
-        }
+        // Every path is UDP now (direct or TURN relay), so frames can drop: FEC
+        // bits are cheap insurance — the receiver rebuilds the lost frame from
+        // the next packet's copy instead of playing a hole. The bitrate the old
+        // server relay would have carried goes to audio instead.
+        _encoder.Bitrate = 96000;
+        _encoder.UseInbandFEC = true;
+        _encoder.PacketLossPercent = 15;
     }
 
     /// <summary>True while the control socket can carry emits. SendRaw drops frames

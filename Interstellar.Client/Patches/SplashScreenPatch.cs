@@ -39,18 +39,18 @@ public static class SplashScreenPatch
                 wrapMode = TextureWrapMode.Clamp
             };
             var stream = Assembly.GetExecutingAssembly()
-                .GetManifestResourceStream("Interstellar.Resources.Logo.jpg")!;
+                .GetManifestResourceStream("Interstellar.Resources.Logo.png")!;
             using var ms = new MemoryStream();
             stream.CopyTo(ms);
             tex.LoadImage(ms.ToArray(), false);
 
             _logoSprite = Sprite.Create(tex,
                 new Rect(0, 0, tex.width, tex.height),
-                new Vector2(0.5f, 0.5f), 350f);
+                new Vector2(0.5f, 0.5f), 175f);
             _logoSprite.hideFlags |= HideFlags.HideAndDontSave | HideFlags.DontSaveInEditor;
             return _logoSprite;
         }
-        catch (System.Exception e)
+        catch (Exception e)
         {
             InterstellarPlugin.Logger.LogError($"[VC] Failed to load logo sprite: {e}");
             return null!;
@@ -100,8 +100,7 @@ public static class SplashScreenPatch
 
         var textTmp = textGo.AddComponent<TextMeshPro>();
         textTmp.text = Get("vc.splash.title", "Interstellar Voice Chat") + $" v{InterstellarPlugin.PluginVersion}" + "\n<size=70%>"
-            + Get("vc.splash.madeBy", "Made by") + " <color=#00ffff>FangkuaiYa</color>\n"
-            + Get("vc.splash.sponsorBy", "Sponsor by") + " <color=#ff44ff>TAIKongguo</color></size>";
+            + Get("vc.splash.madeBy", "Made by") + " <color=#8A2BE2>Fungle-Galaxy</color>";
         textTmp.fontSize = 2.5f;
         textTmp.fontStyle = FontStyles.Bold;
         textTmp.alignment = TextAlignmentOptions.Center;

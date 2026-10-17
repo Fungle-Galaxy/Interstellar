@@ -37,7 +37,7 @@ public static class VoiceSettingsPanel
         "vc.cat.volume",
         "vc.cat.lobby",
         "vc.settings.room",
-        "vc.settings.server",
+        "vc.cat.connection",
         "vc.settings.advanced",
     };
 
@@ -48,7 +48,7 @@ public static class VoiceSettingsPanel
         "Player Volume",
         "Public Lobby",
         "Room",
-        "Server",
+        "Connection",
         "Advanced",
     };
 
@@ -59,7 +59,7 @@ public static class VoiceSettingsPanel
     public const int CatVolume = 2;
     public const int CatLobby = 3;
     public const int CatRoom = 4;
-    public const int CatServer = 5;
+    public const int CatConnection = 5;
     public const int CatAdvanced = 6;
 
     private static bool IsAndroid => Application.platform == RuntimePlatform.Android;
@@ -348,7 +348,7 @@ public static class VoiceSettingsPanel
             case CatVolume: BuildVolume(defs); break;
             case CatLobby: BuildLobby(defs); break;
             case CatRoom: BuildRoom(defs); break;
-            case CatServer: BuildServer(defs); break;
+            case CatConnection: BuildConnection(defs); break;
             case CatAdvanced: BuildAdvanced(defs); break;
         }
         return defs;
@@ -379,7 +379,7 @@ public static class VoiceSettingsPanel
             sig = sig * 31 + entries[i].Key.GetHashCode();
         sig = sig * 31 + VoiceConfig.MicrophoneDevices.Count;
         sig = sig * 31 + VoiceConfig.SpeakerDevices.Count;
-        sig = sig * 31 + ServerList.GetServers().Count;
+        sig = sig * 31 + Interstellar.Network.IceConfig.Version;
         return sig;
     }
 
@@ -1025,89 +1025,72 @@ public static class VoiceSettingsPanel
         return title.Length <= 26 ? title : title[..23] + "...";
     }
 
-    private static void BuildServer(List<Entry> defs)
+    private static void BuildConnection(List<Entry> defs)
     {
-        defs.Add(new Entry
-        {
-            Key = "vc.settings.server",
-            // Always shown: a different server is a different voice room even under direct
-            // P2P (join/signalling still runs through it), so nothing hides for P2P anymore.
-            Build = (pane, paneW, y) =>
+        // No server row on purpose: BCL mode has exactly one server, fixed by
+        // the client — displaying it only invites the question "how do I change
+        // it?", which is precisely what the row's absence answers.
+        // No separate "auto pick TURN" toggle either: the region stepper's Auto
+        // option already IS the automatic pick (see P2pTransport.BuildTurnCandidates).
+
+        AddToggle(defs, "vc.settings.natFix", "NAT fix",
+            () => VoiceConfig.NatFix || Interstellar.Network.IceConfig.ForceRelayOnly,
+            v =>
             {
-                var names = ServerList.GetServerNames();
-                return new VoiceUiKit.StepperRow(
-                        () => VoiceConfig.SelectedServerIndex,
-                        OnServerSelected,
-                        () => names.Length,
-                        i => names[Mathf.Clamp(i, 0, names.Length - 1)])
-                    .Build(pane, T("vc.settings.server", "Server"), paneW, y, RowH,
-                        Help("server", "The voice chat server to connect to. Switching it reconnects the voice room."));
-            }
-        });
+                VoiceConfig.NatFix = v;
+                // Routing mode changed: established paths never re-route on
+                // their own — reload the connection so the new mode applies now.
+                VoiceRoom.Current?.RestartTransport("NAT fix " + (v ? "on" : "off"));
+            },
+            Help("natFix", "Sends all voice through a relay server from the start instead of trying a direct connection between players. Only turn it on if you keep failing to hear each other — the trade-off is a little extra delay for everyone in the room."));
 
-        AddValue(defs, "vc.settings.url", "URL",
-            CustomServerUrlValue,
-            Help("url", "Custom voice server address, used when the last (Custom) entry is selected. Edited in the config file."),
-            visible: () => IsCustomServerSelected());
+        AddStepper(defs, "vc.settings.turnRegion", "TURN region",
+            TurnRegionIndex,
+            OnTurnRegionSelected,
+            () => RegionOptions().Length,
+            i => RegionOptions()[Mathf.Clamp(i, 0, RegionOptions().Length - 1)],
+            Help("turnRegion", "Which relay server region to use. Auto always picks the one that answers fastest; pick a specific region only if you want to force it. Most players should leave this on Auto."));
 
-        AddStepper(defs, "vc.settings.transport", "Transport",
-            TransportIndex,
-            OnTransportSelected,
-            () => TransportModes.Length,
-            i => TransportModeLabel(i),
-            Help("transport", "How your voice reaches other players. Auto sends direct P2P and falls back to the server relay per peer when no direct path opens. P2P is direct only: peers you cannot reach directly hear nothing. Relay sends everything through the voice server (the original scheme). Changing it reconnects the voice room."));
-
-        AddAction(defs, "vc.settings.refresh", "Refresh",
-            T("vc.settings.refresh", "Refresh"),
-            () => VoiceRoom.RestartForCurrentGame(),
-            Help("refresh", "Restarts the voice connection for the current game using the selected server."));
+        AddAction(defs, "vc.settings.refreshConn", "Refresh connection",
+            T("vc.settings.refreshConnBtn", "Refresh"),
+            () => VoiceRoom.Current?.RestartTransport("manual refresh"),
+            Help("refreshConn", "Reconnects voice from scratch — use it if voice stops working (no sound, or the bottom-left status looks stuck). Takes a couple of seconds; mic and speaker state are kept."));
     }
 
-    private static bool IsCustomServerSelected()
-        => VoiceConfig.SelectedServerIndex >= ServerList.GetServers().Count;
-
-    private static string CustomServerUrlValue()
+    /// <summary>["Auto"] + the distinct region tags the server has sent so far.
+    /// Snapshot per build — the row Signature folds IceConfig.Version in, so a
+    /// config that lands mid-session repopulates this list.</summary>
+    private static string[] RegionOptions()
     {
-        string current = VoiceConfig.CustomServerURL ?? "";
-        if (string.IsNullOrEmpty(current)) return "(set in config)";
-        return current.Length > 42 ? current[..39] + "..." : current;
+        var regions = Interstellar.Network.IceConfig.Regions;
+        var opts = new string[regions.Count + 1];
+        opts[0] = T("vc.settings.turnRegion.auto", "Auto");
+        for (int i = 0; i < regions.Count; i++)
+            opts[i + 1] = regions[i];
+        return opts;
     }
 
-    /// <summary>Identical to the legacy window's OnServerSelected().</summary>
-    private static void OnServerSelected(int idx)
+    private static int TurnRegionIndex()
     {
-        VoiceConfig.SelectedServerIndex = idx;
-        var serverNames = ServerList.GetServerNames();
-        if (idx < serverNames.Length - 1)
-            VoiceRoom.RestartForCurrentGame();
+        string cur = VoiceConfig.TurnRegion;
+        if (string.IsNullOrEmpty(cur)) return 0;
+        var opts = RegionOptions();
+        for (int i = 1; i < opts.Length; i++)
+            if (string.Equals(opts[i], cur, StringComparison.OrdinalIgnoreCase)) return i;
+        return 0;
+    }
+
+    private static void OnTurnRegionSelected(int idx)
+    {
+        var opts = RegionOptions();
+        int i = Mathf.Clamp(idx, 0, opts.Length - 1);
+        string value = i <= 0 ? "" : opts[i];
+        if (value == VoiceConfig.TurnRegion) return;
+        VoiceConfig.TurnRegion = value;
         _rebuildRequested = true;
-    }
-
-    // ── Transport mode (P2P / relay) ─────────────────────────────
-    private static readonly string[] TransportModes = { "Auto", "P2P", "Relay" };
-
-    private static int TransportIndex()
-    {
-        int idx = Array.IndexOf(TransportModes, VoiceConfig.TransportMode);
-        return idx < 0 ? 0 : idx;
-    }
-
-    private static string TransportModeLabel(int i) => i switch
-    {
-        1 => T("vc.settings.transport.p2p", "P2P direct"),
-        2 => T("vc.settings.transport.relay", "Server relay"),
-        _ => T("vc.settings.transport.auto", "Auto (P2P + relay)"),
-    };
-
-    /// <summary>The mode is snapshotted by the connection when the room starts,
-    /// so a change reconnects — same contract as switching servers.</summary>
-    private static void OnTransportSelected(int idx)
-    {
-        string mode = TransportModes[Mathf.Clamp(idx, 0, TransportModes.Length - 1)];
-        if (mode == VoiceConfig.TransportMode) return;
-        VoiceConfig.TransportMode = mode;
-        VoiceRoom.RestartForCurrentGame();
-        _rebuildRequested = true;
+        // Same as the NAT fix toggle: a pinned region changes which relay the
+        // race picks — reload the connection so it applies now.
+        VoiceRoom.Current?.RestartTransport("TURN region " + (value.Length == 0 ? "auto" : value));
     }
 
     private static void BuildAdvanced(List<Entry> defs)
