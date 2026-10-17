@@ -15,6 +15,9 @@ on:
       - 'nuget.config'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   # ── Client: BepInEx plugin (Windows, net6.0) ──────────────────────
   client:
