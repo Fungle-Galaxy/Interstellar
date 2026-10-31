@@ -1116,7 +1116,40 @@ public static class VoiceSettingsPanel
             0.5f, 2f,
             v => $"<color=#22D3EE>{v:F2}x</color>",
             Help("buttonSize", "Size of the mic and speaker buttons in the bottom-left corner, background plate included. 1.00x is the default; the slider ranges from 0.50x to 2.00x."));
+
+        AddSlider(defs, "vc.settings.buttonOffsetY", "Mic/Speaker Button Offset",
+            () => VoiceConfig.HotkeyButtonOffset,
+            v => VoiceConfig.HotkeyButtonOffset = v,
+            0f, 670f,
+            v => $"<color=#22D3EE>{Mathf.RoundToInt(v)}px</color>",
+            Help("buttonOffsetY", "How far the mic/speaker buttons sit above the bottom-left corner. The default (335px) centres them vertically on screen; raise or lower to taste — the buttons can never move off the top of the screen."));
+
+        AddStepper(defs, "vc.settings.speakPos", "Speaking Display",
+            () => VoiceConfig.SpeakDisplayPos,
+            v => VoiceConfig.SpeakDisplayPos = Mathf.Clamp(v, 0, 4),
+            () => 5,
+            i => SpeakPosLabel(Mathf.Clamp(i, 0, 4)),
+            Help("speakPos", "Where talking players are highlighted. Name shows a mic icon next to the player's name in the world (the classic look); Left/Right/Top/Bottom move it to a Perfect-Comms style strip at that screen edge showing each speaker's avatar, glow and name."));
+
+        AddSlider(defs, "vc.settings.bufferDelay", "Speaker Buffer Delay",
+            () => VoiceConfig.SpeakerBufferMs,
+            v =>
+            {
+                VoiceConfig.SpeakerBufferMs = Mathf.RoundToInt(v / 10f) * 10;
+                VoiceRoom.Current?.ApplySpeakerBuffer();
+            },
+            40f, 400f,
+            v => $"<color=#22D3EE>{Mathf.RoundToInt(v)}ms</color>",
+            Help("bufferDelay", "How much audio playback waits for before starting — higher survives worse networks but you hear people later. 120ms suits most players; only raise it if voices keep cutting out."));
     }
+
+    private static readonly string[] SpeakPosKeys =
+    {
+        "vc.settings.speakPos.name", "vc.settings.speakPos.left", "vc.settings.speakPos.right",
+        "vc.settings.speakPos.top", "vc.settings.speakPos.bottom",
+    };
+    private static string SpeakPosLabel(int i)
+        => T(SpeakPosKeys[i], new[] { "Name", "Left", "Right", "Top", "Bottom" }[i]);
 
     // ========================================================
     //  Tick / input / scrolling

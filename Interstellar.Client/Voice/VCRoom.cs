@@ -93,6 +93,19 @@ public class VCRoom : IConnectionContext, IHasAudioPropertyNode, IMicrophoneCont
         }
     }
 
+    /// <summary>Re-target the jitter cushion on every live peer (and on future
+    /// instances through the audio manager) — the settings panel's buffer-delay
+    /// slider calls this so the change lands without a reconnect.</summary>
+    public void ApplyBufferLength(int cushion, int capacity)
+    {
+        audioManager.SetBufferLength(cushion, capacity);
+        lock (_audioLock)
+        {
+            foreach (var inst in audioInstances.Values)
+                inst.ApplyBuffer(cushion);
+        }
+    }
+
     /// <summary>
     /// 
     /// </summary>
@@ -150,12 +163,11 @@ public class VCRoom : IConnectionContext, IHasAudioPropertyNode, IMicrophoneCont
         }
         _localLevel = max;
         bool shouldSend = !VoiceConfig.VADEnabled || _micPre.IsSpeech;
-        bool gagged = BlackmailVoiceGate.Active;
-        if (!Mute && !gagged && shouldSend)
+        if (!Mute && shouldSend)
         {
             this.connection.SendAudio(samples, samplesLength, samplesMilliseconds);
         }
-        else if (Mute || gagged) System.Threading.Interlocked.Increment(ref _dropMute);
+        else if (Mute) System.Threading.Interlocked.Increment(ref _dropMute);
         else System.Threading.Interlocked.Increment(ref _dropVad);
         OnAudioSent(samples, samplesLength);
     }
@@ -166,7 +178,6 @@ public class VCRoom : IConnectionContext, IHasAudioPropertyNode, IMicrophoneCont
     public bool HasPeers => connection.HasPeers;
     public string SendGate =>
         Mute ? "mute"
-        : BlackmailVoiceGate.Active ? "blackmail"
         : VoiceConfig.VADEnabled && !_micPre.IsSpeech ? "vad"
         : !connection.HasPeers ? "nopeers"
         : "ok";

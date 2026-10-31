@@ -97,4 +97,15 @@
   <string name="vc.settings.refreshConn">Verbindung neu aufbauen</string>
   <string name="vc.settings.refreshConnBtn">Aktualisieren</string>
   <string name="vc.settings.help.refreshConn">Baut die Sprachverbindung von Grund auf neu — sinnvoll, wenn keine Tönungen ankommen oder der Status unten links hängt. Dauert ein paar Sekunden; Mikrofon- und Lautsprechereinstellungen bleiben erhalten.</string>
+  <string name="vc.settings.buttonOffsetY">Mic/Speaker-Button-Versatz</string>
+  <string name="vc.settings.help.buttonOffsetY">Wie weit die Mikrofon-/Lautsprecher-Schaltflächen über der linken unteren Ecke sitzen. Der Standard (335px) zentriert sie vertikal; frei einstellbar — die Schaltflächen können nie den oberen Bildschirmrand verlassen.</string>
+  <string name="vc.settings.speakPos">Sprecher-Anzeige</string>
+  <string name="vc.settings.help.speakPos">Wo sprechende Spieler hervorgehoben werden. „Name" zeigt ein Mikrofon-Symbol neben dem Spielernamen (klassischer Look); Links/Rechts/Oben/Unten versetzt es zu einem Perfect-Comms-Streifen am jeweiligen Bildschirmrand mit Avatar, Glühen und Namen jedes Sprechers.</string>
+  <string name="vc.settings.speakPos.name">Name</string>
+  <string name="vc.settings.speakPos.left">Links</string>
+  <string name="vc.settings.speakPos.right">Rechts</string>
+  <string name="vc.settings.speakPos.top">Oben</string>
+  <string name="vc.settings.speakPos.bottom">Unten</string>
+  <string name="vc.settings.bufferDelay">Lautsprecher-Pufferverzögerung</string>
+  <string name="vc.settings.help.bufferDelay">Wie viel Audio die Wiedergabe vor dem Start sammelt — höher übersteht schlechtere Netze, erhöht aber die Hörverzögerung. 120ms passen für die meisten; nur erhöhen, wenn Stimmen oft abreißen.</string>
 </resources>

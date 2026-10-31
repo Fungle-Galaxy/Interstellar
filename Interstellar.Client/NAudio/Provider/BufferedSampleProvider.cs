@@ -67,6 +67,19 @@ internal class BufferedSampleProvider : ISampleProvider
     /// <summary>Same value in ms, for the [VC:Diag] line.</summary>
     public int HoldTargetMs => (int)(1000L * _holdTarget / Math.Max(1, waveFormat.SampleRate));
 
+    /// <summary>Live-retune the cushion band (the settings panel's buffer-delay
+    /// slider): playout now waits for this many samples, bursts trim back to it,
+    /// and the adaptive growth ceiling follows. Safe while reading — the values
+    /// are plain ints consumed by the next Read.</summary>
+    public void ApplyHoldTarget(int cushion)
+    {
+        HoldTargetSamples = cushion;
+        HoldTargetMinSamples = cushion;
+        HoldTargetMaxSamples = cushion * 2;
+        BufferCutSize = cushion * 2;
+        BufferCutToSize = cushion;
+    }
+
     /// <summary>No underruns for this long → the link recovered, so give the
     /// latency back by stepping the cushion down. Deliberately slow: a faster
     /// decay makes the level sawtooth through a normal conversation.</summary>

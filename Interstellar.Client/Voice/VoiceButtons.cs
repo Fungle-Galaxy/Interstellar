@@ -28,16 +28,15 @@ namespace Interstellar;
 [HarmonyLib.HarmonyPatch(typeof(HudManager), nameof(HudManager.Update))]
 public static class VoiceButtons
 {
-    /// <summary>Android build: the floating movement joystick owns the bottom-left touch
-    /// zone, and the plate sits right inside it — the whole plate (both buttons) rides
-    /// higher there so it stops eating joystick touches.</summary>
-    private static readonly bool IsAndroid = OperatingSystem.IsAndroid();
-
     /// <summary>Bottom-left of the canvas, just above the server-info line. That text
     /// dropped to 18pt, so the plate closes ~30px (a bit over a third of a button) of
-    /// the gap it used to leave — 72 still clears the text's 20..56 box. On Android it
-    /// lifts by 2.5 button heights (2.5 × the 94px slot face = 235) out of the joystick.</summary>
-    private static readonly Vector2 CornerPos = IsAndroid ? new Vector2(30f, 72f + 2.5f * 94f) : new Vector2(30f, 72f);
+    /// the gap it used to leave — 72 still clears the text's 20..56 box. The settings
+    /// slider lifts the whole plate above this base; its default (335px) centres the
+    /// plate vertically on a 1080-high canvas. Android's old automatic joystick lift
+    /// is gone — players there set the very same slider.</summary>
+    private static readonly Vector2 CornerBase = new(30f, 72f);
+    /// <summary>Applied lift — recomputed whenever the config value or the scale moves.</summary>
+    private static float _offsetY;
 
     // VoiceButtonsBG.png, measured pixel by pixel: a 154x267 plate (opaque box x5..142 /
     // y7..260) holding two recessed button slots — a brighter face inside a dark outline,
@@ -96,13 +95,12 @@ public static class VoiceButtons
         _root = root.gameObject;
         root.anchorMin = root.anchorMax = Vector2.zero;
         root.pivot = Vector2.zero;
-        root.anchoredPosition = CornerPos;
         root.sizeDelta = PlateSize;
-        // Scale the whole unit — plate, both icons, their hit targets — around the
-        // bottom-left pivot, so the fixed CornerPos keeps the Android lift clear of
-        // the joystick no matter how big the buttons get.
+        // Scale first: the offset clamp depends on the plate's scaled height.
         _scale = VoiceConfig.HotkeyButtonScale;
+        _offsetY = ClampedOffset();
         root.localScale = Vector3.one * _scale;
+        root.anchoredPosition = CornerBase + new Vector2(0f, _offsetY);
 
         // The plate is decoration only: drawn first (behind the icons) and never a click
         // target, so a press lands on the button under the pointer, not on the margin.
@@ -149,14 +147,30 @@ public static class VoiceButtons
     private static void Tick()
     {
         if (_root == null) return;
-        // The settings slider can retune the size at any moment — apply it live so a
-        // drag resizes plate, icons and hit targets together on the very next frame.
+        // The settings sliders can retune size and lift at any moment — apply both
+        // live so a drag moves plate, icons and hit targets on the very next frame.
         float s = VoiceConfig.HotkeyButtonScale;
         if (s != _scale) { _scale = s; _root.transform.localScale = Vector3.one * s; }
+        float o = ClampedOffset();
+        if (!Mathf.Approximately(o, _offsetY))
+        {
+            _offsetY = o;
+            var rt = _root.GetComponent<RectTransform>();
+            if (rt != null) rt.anchoredPosition = CornerBase + new Vector2(0f, o);
+        }
         bool show = VoiceRoom.Current != null
             && SceneManager.GetActiveScene().name == "OnlineGame";
         if (_root.activeSelf != show) _root.SetActive(show);
         if (show) RefreshVisuals();
+    }
+
+    /// <summary>The configured lift, clamped so the plate's top edge (267px × scale,
+    /// plus the base 72) always stays on a 1080-high canvas at any button scale.</summary>
+    private static float ClampedOffset()
+    {
+        float max = Mathf.Max(0f,
+            1080f - CornerBase.y - PlateSize.y * VoiceConfig.HotkeyButtonScale - 16f);
+        return Mathf.Clamp(VoiceConfig.HotkeyButtonOffset, 0f, Mathf.Min(670f, max));
     }
 
     internal static void CycleMic()

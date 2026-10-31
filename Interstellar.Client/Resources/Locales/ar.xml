@@ -97,4 +97,15 @@
   <string name="vc.settings.refreshConn">إعادة بناء اتصال الصوت</string>
   <string name="vc.settings.refreshConnBtn">تحديث</string>
   <string name="vc.settings.help.refreshConn">يعيد بناء اتصال الصوت من الصفر — استخدمه إذا توقف الصوت (لا صوت أو علامة الحالة السفلية عالقة). يستغرق بضع ثوانٍ؛ تُحتفظ بإعدادات الميكروفون والسماعة.</string>
+  <string name="vc.settings.buttonOffsetY">إزاحة أزرار الميكروفون/مكبر الصوت</string>
+  <string name="vc.settings.help.buttonOffsetY">المسافة التي تعلوها أزرار الميكروفون ومكبر الصوت فوق الزاوية السفلية اليسرى. الافتراضي (335px) يركّزها عموديًا على الشاشة؛ يمكن تعديلها بحرية — لا يمكن للأزرار أن تخرج عن أعلى الشاشة.</string>
+  <string name="vc.settings.speakPos">عرض اللاعبين المتكلمين</string>
+  <string name="vc.settings.help.speakPos">أين يتم تمييز اللاعبين المتكلمين. «الاسم» يعرض أيقونة ميكروفون بجانب اسم اللاعب في العالم (المظهر الكلاسيكي)؛ يسار/يمين/أعلى/أسفل ينقلها إلى شريط بأسلوب Perfect-Comms على حافة الشاشة مع الصورة والتوهج والاسم لكل متكلم.</string>
+  <string name="vc.settings.speakPos.name">الاسم</string>
+  <string name="vc.settings.speakPos.left">يسار</string>
+  <string name="vc.settings.speakPos.right">يمين</string>
+  <string name="vc.settings.speakPos.top">أعلى</string>
+  <string name="vc.settings.speakPos.bottom">أسفل</string>
+  <string name="vc.settings.bufferDelay">تأخير ذاكرة مكبر الصوت المؤقتة</string>
+  <string name="vc.settings.help.bufferDelay">كمية الصوت التي تُجمع قبل بدء التشغيل — كلما زادت تحمّت الشبكات الأسوأ لكنها تزيد التأخير. 120ms مناسبة لمعظم اللاعبين؛ ارفعها فقط إذا انقطع الصوت باستمرار.</string>
 </resources>

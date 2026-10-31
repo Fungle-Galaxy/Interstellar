@@ -187,4 +187,15 @@
   <string name="vc.settings.refreshConn">Refresh connection</string>
   <string name="vc.settings.refreshConnBtn">Refresh</string>
   <string name="vc.settings.help.refreshConn">Reconnects voice from scratch — use it if voice stops working (no sound, or the bottom-left status looks stuck). Takes a couple of seconds; mic and speaker state are kept.</string>
+  <string name="vc.settings.buttonOffsetY">Mic/Speaker Button Offset</string>
+  <string name="vc.settings.help.buttonOffsetY">How far the mic/speaker buttons sit above the bottom-left corner. The default (335px) centres them vertically on screen; raise or lower to taste — the buttons can never move off the top.</string>
+  <string name="vc.settings.speakPos">Speaking Display</string>
+  <string name="vc.settings.help.speakPos">Where talking players are highlighted. Name shows a mic icon next to the player's name in the world (the classic look); Left/Right/Top/Bottom move it to a Perfect-Comms style strip at that screen edge showing each speaker's avatar, glow and name.</string>
+  <string name="vc.settings.speakPos.name">Name</string>
+  <string name="vc.settings.speakPos.left">Left</string>
+  <string name="vc.settings.speakPos.right">Right</string>
+  <string name="vc.settings.speakPos.top">Top</string>
+  <string name="vc.settings.speakPos.bottom">Bottom</string>
+  <string name="vc.settings.bufferDelay">Speaker Buffer Delay</string>
+  <string name="vc.settings.help.bufferDelay">How much audio playback waits for before starting — higher survives worse networks but you hear people later. 120ms suits most players; only raise it if voices keep cutting out.</string>
 </resources>

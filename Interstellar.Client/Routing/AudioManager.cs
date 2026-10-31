@@ -50,6 +50,15 @@ internal class AudioManager : IHasAudioPropertyNode
 
     private int bufferLength, bufferMaxLength;
 
+    /// <summary>Retarget the jitter cushion used for instances generated from now
+    /// on — the settings panel's buffer-delay slider applies this live (existing
+    /// instances are updated through AudioRoutingInstance.ApplyBuffer).</summary>
+    internal void SetBufferLength(int cushion, int capacity)
+    {
+        bufferLength = cushion;
+        bufferMaxLength = capacity;
+    }
+
     private int FixStructure()
     {
         int availableId = 0;
@@ -123,7 +132,9 @@ internal class AudioManager : IHasAudioPropertyNode
             }
             if (!router.IsGlobalRouter) foreach (var c in router.GetChildRouters()) GenerateInner(c, nodes[router.Id]?.Processor);
         }
-        BufferedSampleProvider sourceProvider = new(WaveFormat.CreateIeeeFloatWaveFormat(AudioConstants.ClockRate, 1), bufferMaxLength)
+        // The circular buffer gets a generous fixed ceiling (1s @48k mono) so the
+        // settings slider can raise the cushion live without outgrowing capacity.
+        BufferedSampleProvider sourceProvider = new(WaveFormat.CreateIeeeFloatWaveFormat(AudioConstants.ClockRate, 1), Math.Max(bufferMaxLength, 48000))
         {
             DiscardOnBufferOverflow = true,
             // Jitter buffer: playout waits for (and after every underrun rebuilds)

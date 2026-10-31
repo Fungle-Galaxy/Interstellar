@@ -138,6 +138,35 @@ public static class VoiceConfig
         set { if (_hotkeyBtnScale != null && float.IsFinite(value)) _hotkeyBtnScale.Value = value; }
     }
 
+    /// <summary>How far the mic/speaker button plate rides above the bottom-left
+    /// corner, in canvas px. Default 335 centres the plate vertically on a
+    /// 1080-high canvas (the slider's midpoint); the runtime clamps the top of
+    /// the range so the plate can never leave the screen at any button scale.</summary>
+    public static float HotkeyButtonOffset
+    {
+        get { float v = _hotkeyBtnOffset?.Value ?? 335f; return float.IsFinite(v) ? Math.Clamp(v, 0f, 670f) : 335f; }
+        set { if (_hotkeyBtnOffset != null && float.IsFinite(value)) _hotkeyBtnOffset.Value = value; }
+    }
+
+    /// <summary>Where the speaking-player highlight is drawn. 0 = Name (mic icon
+    /// next to each player's name — the classic look); 1..4 = a Perfect-Comms
+    /// style speaking strip at the Left / Right / Top / Bottom screen edge.</summary>
+    public static int SpeakDisplayPos
+    {
+        get { int v = _speakDisplayPos?.Value ?? 0; return v < 0 || v > 4 ? 0 : v; }
+        set { if (_speakDisplayPos != null) _speakDisplayPos.Value = Mathf.Clamp(value, 0, 4); }
+    }
+
+    /// <summary>Steady-state speaker playout cushion in ms — how much audio the
+    /// jitter buffer collects before playback starts (it grows on jitter and
+    /// shrinks back when the link calms). Applies live and on the next room
+    /// join. Replaces the old fixed 120ms desktop / 160ms Android pair.</summary>
+    public static int SpeakerBufferMs
+    {
+        get { int v = _speakerBufferMs?.Value ?? 120; return v < 40 || v > 400 ? 120 : v; }
+        set { if (_speakerBufferMs != null) _speakerBufferMs.Value = Mathf.Clamp(value, 40, 400); }
+    }
+
     // ── Audio processing ───────────────────────────────────
     public static bool NoiseSuppression
     {
@@ -560,6 +589,9 @@ public static class VoiceConfig
     private static ConfigEntry<string>? _mic, _speaker;
     private static ConfigEntry<float>? _masterVol, _micVol;
     private static ConfigEntry<float>? _hotkeyBtnScale;
+    private static ConfigEntry<float>? _hotkeyBtnOffset;
+    private static ConfigEntry<int>? _speakDisplayPos;
+    private static ConfigEntry<int>? _speakerBufferMs;
     private static ConfigEntry<bool>? _noiseSuppression, _echoCancellation;
     private static ConfigEntry<bool>? _vadEnabled;
     private static ConfigEntry<bool>? _autoVolumeEnabled;
@@ -637,6 +669,20 @@ public static class VoiceConfig
         _hotkeyBtnScale = cfg.Bind("VoiceChat", "HotkeyButtonScale", 1f,
             new ConfigDescription("Bottom-left mic/speaker button size multiplier",
                 new AcceptableValueRange<float>(0.5f, 2f)));
+        _hotkeyBtnOffset = cfg.Bind("VoiceChat", "HotkeyButtonOffset", 335f,
+            new ConfigDescription("How far the mic/speaker button plate rides above " +
+                "the bottom-left corner, in px (335 = centred vertically on 1080).",
+                new AcceptableValueRange<float>(0f, 670f)));
+        _speakDisplayPos = cfg.Bind("VoiceChat", "SpeakDisplayPos", 0,
+            new ConfigDescription("Where speaking players are highlighted: 0 = mic " +
+                "icon next to the name, 1 = Left strip, 2 = Right strip, " +
+                "3 = Top strip, 4 = Bottom strip (Perfect-Comms style).",
+                new AcceptableValueRange<int>(0, 4)));
+        _speakerBufferMs = cfg.Bind("VoiceChat", "SpeakerBufferMs", 120,
+            new ConfigDescription("Speaker playout cushion in ms — playback waits " +
+                "for this much audio before starting. Higher survives worse " +
+                "networks but adds delay.",
+                new AcceptableValueRange<int>(40, 400)));
 
         _noiseSuppression = cfg.Bind("VoiceChat", "NoiseSuppression", true);
         _echoCancellation = cfg.Bind("VoiceChat", "EchoCancellation", true);

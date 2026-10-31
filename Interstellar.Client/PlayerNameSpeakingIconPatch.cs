@@ -103,7 +103,10 @@ public static class PlayerNameSpeakingIconPatch
             }
 
             bool isConnected = connectedIds.Contains(clientId);
-            bool isSpeaking = speakingIds.Contains(clientId);
+            // Bar mode (Left/Right/Top/Bottom): the speaking highlight moves to the
+            // screen-edge strip (SpeakingBarHud) — the name keeps only NoConnect.
+            bool isSpeaking = speakingIds.Contains(clientId)
+                && VoiceConfig.SpeakDisplayPos == 0;
 
             if (!isConnected)
             {

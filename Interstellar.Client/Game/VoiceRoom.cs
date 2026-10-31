@@ -144,16 +144,14 @@ public class VoiceRoom
                     _clients.Remove(clientId);
                 },
             // Jitter buffer cushion (steady-state playout delay) + hard capacity,
-            // both in samples @48kHz:
-            //   Android: 160ms cushion / 640ms capacity.
-            //   Desktop: 120ms cushion / 400ms capacity.
-            // bufferLength is the target the playback holds at; bufferLength*2 is
-            // where incoming bursts get trimmed back down to it (gradually).
-            // Sized from the diag logs: the link delivers in bursts (10→40→7
-            // frames/s against a steady 25/s send), so the old 120ms cushion
-            // starved once per second and the 480ms capacity was actually
-            // reached — overflow there drops *new* speech.
-            }.SetBufferLength(IsAndroid ? 7680 : 5760, IsAndroid ? 23040 : 13440));
+            // both in samples @48kHz. The cushion comes from the settings panel's
+            // "Speaker buffer delay" slider (40..400ms, default 120 — applied live
+            // through ApplySpeakerBuffer); it used to be a fixed 120ms desktop /
+            // 160ms Android pair. bufferLength is the target the playback holds at;
+            // bursts above 2× it get trimmed back down gradually. Sized from the
+            // diag logs: the link delivers in bursts (10→40→7 frames/s against a
+            // steady 25/s send), so a thin cushion starved once per second.
+            }.SetBufferLength(SpeakerBufferSamples(), SpeakerBufferCapacity()));
 
         _masterVolumeProperty = masterRouter.GetProperty(_interstellar);
         SetMasterVolume(VoiceConfig.MasterVolume);
@@ -174,6 +172,16 @@ public class VoiceRoom
     }
 
     public void SetMasterVolume(float v) => _masterVolumeProperty.Volume = v;
+    /// <summary>Jitter cushion samples for the configured playout delay.</summary>
+    private static int SpeakerBufferSamples() => VoiceConfig.SpeakerBufferMs * 48;
+    /// <summary>Hard capacity: three cushions, never less than 400ms — bursts trim
+    /// back toward the cushion from here instead of dropping new speech.</summary>
+    private static int SpeakerBufferCapacity() => Math.Max(SpeakerBufferSamples() * 3, 19200);
+
+    /// <summary>Apply the settings panel's buffer-delay slider to every live peer —
+    /// effective on the next audio callback, no reconnect needed.</summary>
+    public void ApplySpeakerBuffer()
+        => _interstellar.ApplyBufferLength(SpeakerBufferSamples(), SpeakerBufferCapacity());
     public void SetMicVolume(float v) => _interstellar.Microphone?.SetVolume(v);
     public void SetLoopBack(bool lb) => _interstellar.SetLoopBack(lb);
     public void SetMute(bool mute, bool isImpostorRadio = false) => _interstellar.SetMute(mute, isImpostorRadio);
@@ -265,10 +273,6 @@ public class VoiceRoom
         _androidMic?.Update();
         _androidSpeaker?.Update();
         _interstellar.DecayFarEnd(Time.deltaTime);
-
-        // Role-mod meeting gag poll (main thread only — reads the quick chat button,
-        // never the chat text; see BlackmailVoiceGate).
-        BlackmailVoiceGate.Poll();
 
         TryUpdateLocalProfile();
 

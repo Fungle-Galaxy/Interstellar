@@ -97,4 +97,15 @@
   <string name="vc.settings.refreshConn">音声接続を再読み込み</string>
   <string name="vc.settings.refreshConnBtn">再読み込み</string>
   <string name="vc.settings.help.refreshConn">音声接続をゼロから作り直します——音が出ない場合や左下のステータスが固まっている場合に使ってください。数秒かかります。マイクとスピーカーの設定は保持されます。</string>
+  <string name="vc.settings.buttonOffsetY">マイク/スピーカーボタンの上方向オフセット</string>
+  <string name="vc.settings.help.buttonOffsetY">マイクとスピーカーのボタンが画面左下からどれだけ上にあるか。デフォルト（335px）では縦方向に中央配置；自由に調整でき、ボタンが画面上端から外れることはありません。</string>
+  <string name="vc.settings.speakPos">話し手の表示場所</string>
+  <string name="vc.settings.help.speakPos">話しているプレイヤーをどこに表示するか。「名前」はワールド内の名前の横にマイクアイコン（従来スタイル）；左/右/上/下はその画面端に Perfect-Comms スタイルのストリップでアバター・グロー・名前を表示します。</string>
+  <string name="vc.settings.speakPos.name">名前</string>
+  <string name="vc.settings.speakPos.left">左</string>
+  <string name="vc.settings.speakPos.right">右</string>
+  <string name="vc.settings.speakPos.top">上</string>
+  <string name="vc.settings.speakPos.bottom">下</string>
+  <string name="vc.settings.bufferDelay">スピーカーバッファ遅延</string>
+  <string name="vc.settings.help.bufferDelay">再生開始前に溜める音声の量。高いほど悪いネットワークに耐えますが、聞こえるまでの遅延が増えます。ほとんどのプレイヤーは 120ms で十分；声が切れがちになる場合のみ上げてください。</string>
 </resources>

@@ -33,6 +33,9 @@ public class AudioRoutingInstance : IHasAudioPropertyNode
         System.Threading.Interlocked.Increment(ref _rxFrames);
     }
 
+    /// <summary>Live-retune this peer's jitter cushion (settings panel buffer delay).</summary>
+    internal void ApplyBuffer(int cushion) => sourceProvider.ApplyHoldTarget(cushion);
+
     private long LastReceiptTime = System.DateTime.Now.Ticks;
     public int ElapsedSinceLastReceipt => (int)((System.DateTime.Now.Ticks - LastReceiptTime) / 10000); // milliseconds
 

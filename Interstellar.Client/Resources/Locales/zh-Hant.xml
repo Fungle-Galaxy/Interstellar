@@ -187,4 +187,15 @@
   <string name="vc.settings.refreshConn">重新整理語音連線</string>
   <string name="vc.settings.refreshConnBtn">重新整理</string>
   <string name="vc.settings.help.refreshConn">從頭重建語音連線——如果語音失效（沒聲音、或左下角狀態卡住）就點它。需要幾秒鐘；麥克風和揚聲器設定會保留。</string>
+  <string name="vc.settings.buttonOffsetY">麥克風/揚聲器按鈕上移距離</string>
+  <string name="vc.settings.help.buttonOffsetY">麥克風和揚聲器按鈕距離螢幕左下角的高度。預設（335px）時按鈕垂直置中；可自由調整，按鈕永遠不會移出螢幕頂部。</string>
+  <string name="vc.settings.speakPos">發言玩家顯示位置</string>
+  <string name="vc.settings.help.speakPos">正在說話的玩家在哪裡高亮顯示。名字＝在世界中玩家名字旁顯示麥克風圖示（原樣式）；左側/右側/頂部/底部＝以 Perfect-Comms 風格的條帶顯示在對應螢幕邊緣，包含每個發言者的頭像、光暈和名字。</string>
+  <string name="vc.settings.speakPos.name">名字</string>
+  <string name="vc.settings.speakPos.left">左側</string>
+  <string name="vc.settings.speakPos.right">右側</string>
+  <string name="vc.settings.speakPos.top">頂部</string>
+  <string name="vc.settings.speakPos.bottom">底部</string>
+  <string name="vc.settings.bufferDelay">揚聲器緩衝延遲</string>
+  <string name="vc.settings.help.bufferDelay">播放前等待積累的音訊量——數值越高越能適應糟糕的網路，但會增加聽到聲音的延遲。大多數玩家用 120ms 即可；只有聲音經常斷續時才調高。</string>
 </resources>
